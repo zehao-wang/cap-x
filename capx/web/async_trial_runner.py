@@ -172,6 +172,14 @@ async def run_trial_async(
             return obs, info, frame
 
         obs, _, initial_frame = await run_in_env_thread(_reset_and_render)
+        # Per-trial artifact dir for SAM3/Molmo intermediate dumps. The reduced
+        # APIs are constructed against env.low_level_env, so set both to be
+        # robust to either being read by resolve_dump_dir.
+        if session.config.get("output_dir"):
+            trial_dir_inflight = os.path.join(session.config["output_dir"], f"trial_{trial:02d}")
+            env.trial_artifact_dir = trial_dir_inflight
+            if hasattr(env, "low_level_env"):
+                env.low_level_env.trial_artifact_dir = trial_dir_inflight
         obs["full_prompt"] = copy.deepcopy(obs["full_prompt"])
 
         # Patch LIBERO task language into prompt template

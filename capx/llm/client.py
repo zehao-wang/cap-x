@@ -42,6 +42,7 @@ VLM_MODELS = [
     "deepseek/deepseek-r1",
     "qwen/qwen3.5-122b-a10b",
     "moonshotai/kimi-k2",
+    "Qwen3.6-27B",
 ]
 CLAUDE_MODELS = ["anthropic/claude-opus-4-5", "anthropic/claude-haiku-4-5"]
 OSS_MODELS = [

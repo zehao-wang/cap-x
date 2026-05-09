@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from PIL import Image
 from scipy.spatial.transform import Rotation as SciRotation
 
 
@@ -171,6 +172,210 @@ def draw_molmo_point(
             cv2.circle(img_draw, (x, y), outer_radius, outer_color, -1)
             cv2.circle(img_draw, (x, y), inner_radius, inner_color, -1)
     return img_draw
+
+
+_SAM3_DUMP_PALETTE = [
+    (255, 0, 0), (0, 255, 0), (0, 80, 255), (255, 200, 0),
+    (255, 0, 255), (0, 255, 255),
+]
+
+
+def resolve_dump_dir(env, env_var_name: str, leaf: str):
+    """Resolve where SAM3/Molmo intermediate dumps for this call should land.
+
+    Prefers ``env.trial_artifact_dir`` (set by the trial runner at reset
+    time, so each episode's intermediates land in their own subdir). Falls
+    back to the legacy flat ``$CAPX_*_DUMP_DIR`` so existing setups keep
+    working when the env attribute isn't set.
+    """
+    import os
+    import pathlib
+
+    trial_dir = getattr(env, "trial_artifact_dir", None)
+    if trial_dir:
+        return pathlib.Path(trial_dir) / leaf
+    flat = os.environ.get(env_var_name)
+    return pathlib.Path(flat) if flat else None
+
+
+def _render_sam3_overlay(
+    rgb: np.ndarray,
+    sorted_results: list,
+    top_k_overlay: int,
+    point: "tuple[int, int] | None" = None,
+) -> "Image.Image":
+    """Compose mask+box (and optional point marker) overlay on top of RGB."""
+    from PIL import ImageDraw
+
+    rgb_pil = Image.fromarray(rgb).convert("RGBA")
+    composed = rgb_pil.copy()
+    for i, r in enumerate(sorted_results[:top_k_overlay]):
+        color = _SAM3_DUMP_PALETTE[i % len(_SAM3_DUMP_PALETTE)]
+        mask = r.get("mask")
+        if mask is not None:
+            mask_arr = np.asarray(mask).astype(bool)
+            mask_layer = np.zeros((*mask_arr.shape, 4), dtype=np.uint8)
+            mask_layer[mask_arr] = (*color, 110)
+            composed = Image.alpha_composite(composed, Image.fromarray(mask_layer, mode="RGBA"))
+    draw = ImageDraw.Draw(composed)
+    for i, r in enumerate(sorted_results[:top_k_overlay]):
+        color = _SAM3_DUMP_PALETTE[i % len(_SAM3_DUMP_PALETTE)]
+        box = r.get("box")
+        if box is not None and len(box) == 4:
+            x1, y1, x2, y2 = [int(v) for v in box]
+            draw.rectangle([x1, y1, x2, y2], outline=(*color, 255), width=2)
+            draw.text((x1 + 2, y1 + 2), f"{i}:{r.get('score', 0):.2f}", fill=(*color, 255))
+    if point is not None:
+        x, y = int(point[0]), int(point[1])
+        draw.ellipse([x - 6, y - 6, x + 6, y + 6], outline=(255, 255, 0, 255), width=2)
+        draw.ellipse([x - 2, y - 2, x + 2, y + 2], fill=(255, 255, 0, 255))
+    return composed
+
+
+def _save_sam3_dump(
+    composed: "Image.Image",
+    rgb: np.ndarray,
+    results: list,
+    sorted_results: list,
+    dump_dir: "str | os.PathLike",
+    base: str,
+    title: str,
+    extra_meta: dict,
+) -> None:
+    """Save a composed SAM3 overlay + meta JSON pair under <dump_dir>/<base>."""
+    import json
+    import pathlib
+
+    from PIL import ImageDraw
+
+    p = pathlib.Path(dump_dir)
+    p.mkdir(parents=True, exist_ok=True)
+
+    title_h = 24
+    out_w, out_h = composed.size
+    titled = Image.new("RGB", (out_w, out_h + title_h), (0, 0, 0))
+    titled.paste(composed.convert("RGB"), (0, title_h))
+    ImageDraw.Draw(titled).text((4, 4), title, fill=(255, 255, 255))
+    titled.save(p / f"{base}.png")
+
+    meta = {
+        **extra_meta,
+        "n_results": len(results),
+        "image_hw": list(rgb.shape[:2]),
+        "results": [
+            {
+                "score": float(r.get("score", 0) or 0),
+                "box": list(r["box"]) if r.get("box") is not None else None,
+                "mask_area_px": int(np.asarray(r["mask"]).sum()) if r.get("mask") is not None else None,
+            }
+            for r in results
+        ],
+    }
+    (p / f"{base}.json").write_text(json.dumps(meta, indent=2))
+
+
+def dump_sam3_call(
+    rgb: np.ndarray,
+    text_prompt: str,
+    results: list,
+    dump_dir: "str | os.PathLike",
+    top_k_overlay: int = 5,
+) -> None:
+    """Persist a SAM3 text-prompt call: overlay PNG (top-K) + meta JSON (all)."""
+    import os
+    import time
+
+    safe_prompt = "".join(c if c.isalnum() or c in "_-" else "_" for c in text_prompt)[:40]
+    base = f"{time.time_ns()}_pid{os.getpid()}_{safe_prompt}_n{len(results)}"
+    sorted_results = sorted(results, key=lambda d: d.get("score", 0) or 0, reverse=True)
+    composed = _render_sam3_overlay(rgb, sorted_results, top_k_overlay)
+    if results:
+        title = (
+            f"prompt={text_prompt!r}  n={len(results)}  "
+            f"top1_score={sorted_results[0].get('score', 0):.3f}"
+        )
+    else:
+        title = f"prompt={text_prompt!r}  n=0"
+    _save_sam3_dump(
+        composed, rgb, results, sorted_results, dump_dir, base, title,
+        extra_meta={"text_prompt": text_prompt},
+    )
+
+
+def dump_sam3_point_call(
+    rgb: np.ndarray,
+    point_coords: "tuple[float, float]",
+    results: list,
+    dump_dir: "str | os.PathLike",
+    top_k_overlay: int = 5,
+) -> None:
+    """Persist a SAM3 point-prompt call: overlay PNG (with point marker) + meta JSON."""
+    import os
+    import time
+
+    x, y = int(point_coords[0]), int(point_coords[1])
+    base = f"{time.time_ns()}_pid{os.getpid()}_pt_x{x}_y{y}_n{len(results)}"
+    sorted_results = sorted(results, key=lambda d: d.get("score", 0) or 0, reverse=True)
+    composed = _render_sam3_overlay(rgb, sorted_results, top_k_overlay, point=(x, y))
+    if results:
+        title = (
+            f"point=({x},{y})  n={len(results)}  "
+            f"top1_score={sorted_results[0].get('score', 0):.3f}"
+        )
+    else:
+        title = f"point=({x},{y})  n=0"
+    _save_sam3_dump(
+        composed, rgb, results, sorted_results, dump_dir, base, title,
+        extra_meta={"point_coords": [x, y]},
+    )
+
+
+def dump_molmo_call(
+    rgb: np.ndarray,
+    text_prompt: str,
+    result: dict[str, tuple[int | None, int | None]],
+    dump_dir: "str | os.PathLike",
+) -> None:
+    """Persist a Molmo point-prompt call: overlay PNG + meta JSON.
+
+    Filenames are timestamp + pid + sanitized prompt to avoid collisions across
+    parallel workers. Mirror of dump_sam3_call so SAM3 and Molmo dumps land in
+    sibling directories.
+    """
+    import json
+    import os
+    import pathlib
+    import time
+
+    p = pathlib.Path(dump_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    safe_prompt = "".join(c if c.isalnum() or c in "_-" else "_" for c in text_prompt)[:40]
+    base = f"{time.time_ns()}_pid{os.getpid()}_{safe_prompt}"
+
+    overlay = draw_molmo_point(rgb, result)
+    # Annotate with prompt + parsed coord(s) on a top banner.
+    title_h = 24
+    out_h, out_w = overlay.shape[:2]
+    titled = np.zeros((out_h + title_h, out_w, 3), dtype=np.uint8)
+    titled[title_h:, :, :] = overlay
+    pts_str = ", ".join(
+        f"{name}={pt}" for name, pt in result.items()
+    )
+    cv2.putText(
+        titled, f"prompt={text_prompt!r}  {pts_str}",
+        (4, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA,
+    )
+    Image.fromarray(titled).save(p / f"{base}.png")
+
+    meta = {
+        "text_prompt": text_prompt,
+        "image_hw": list(rgb.shape[:2]),
+        "result": {
+            name: list(pt) if pt is not None and pt[0] is not None else None
+            for name, pt in result.items()
+        },
+    }
+    (p / f"{base}.json").write_text(json.dumps(meta, indent=2))
 
 
 # ---------------------------------------------------------------------------

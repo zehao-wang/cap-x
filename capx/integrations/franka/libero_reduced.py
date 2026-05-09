@@ -1,15 +1,21 @@
 import logging
-import pathlib
-import time
+import os
 from typing import Any
 
 import numpy as np
 import open3d as o3d
 import viser.transforms as vtf
-from PIL import Image, ImageDraw
+from PIL import Image
 from scipy.spatial.transform import Rotation as SciRotation
 
 logger = logging.getLogger(__name__)
+
+
+from capx.utils.visualization_utils import (
+    dump_sam3_call as _dump_sam3_call,
+    dump_sam3_point_call as _dump_sam3_point_call,
+    resolve_dump_dir,
+)
 
 from capx.envs.base import (
     BaseEnv,
@@ -158,7 +164,14 @@ class FrankaLiberoApiReduced(ApiBase):
             >>> rgb = obs["agentview"]["images"]["rgb"]
             >>> masks = segment_sam3_point_prompt(rgb, (100, 100))
         """
-        return self.sam3_point_prompt_fn(Image.fromarray(rgb), point_coords)
+        results = self.sam3_point_prompt_fn(Image.fromarray(rgb), point_coords)
+        dump_dir = resolve_dump_dir(self._env, "CAPX_SAM3_DUMP_DIR", "sam3_dumps")
+        if dump_dir:
+            try:
+                _dump_sam3_point_call(rgb, point_coords, results, dump_dir)
+            except Exception as e:
+                logger.warning("SAM3 point-prompt dump failed at %s: %s", point_coords, e)
+        return results
 
     def segment_sam3_text_prompt(
         self,
@@ -189,6 +202,12 @@ class FrankaLiberoApiReduced(ApiBase):
             >>> masks = segment_sam3(rgb, text_prompt="red mug")
         """
         results = self.sam3_seg_fn(rgb, text_prompt=text_prompt)
+        dump_dir = resolve_dump_dir(self._env, "CAPX_SAM3_DUMP_DIR", "sam3_dumps")
+        if dump_dir:
+            try:
+                _dump_sam3_call(rgb, text_prompt, results, dump_dir)
+            except Exception as e:
+                logger.warning("SAM3 dump failed for prompt %r: %s", text_prompt, e)
         if len(results) == 0:
             print(f"[segment_sam3_text_prompt] SAM3 returned no results for prompt: '{text_prompt}'")
             return []
@@ -212,7 +231,15 @@ class FrankaLiberoApiReduced(ApiBase):
             dict[str, tuple[int | None, int | None]]: Pixel coordinates for each
             object query; (None, None) if parsing failed.
         """
-        return self.molmo_point_fn(Image.fromarray(image), objects=[text_prompt])
+        result = self.molmo_point_fn(Image.fromarray(image), objects=[text_prompt])
+        dump_dir = resolve_dump_dir(self._env, "CAPX_MOLMO_DUMP_DIR", "molmo_dumps")
+        if dump_dir:
+            try:
+                from capx.utils.visualization_utils import dump_molmo_call
+                dump_molmo_call(image, text_prompt, result, dump_dir)
+            except Exception as e:
+                logger.warning("Molmo dump failed for prompt %r: %s", text_prompt, e)
+        return result
 
     def get_oriented_bounding_box_from_3d_points(self, points: np.ndarray) -> dict[str, Any]:
         """Get the oriented bounding box from 3D points.

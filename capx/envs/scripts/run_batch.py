@@ -198,6 +198,12 @@ class BatchLaunchArgs:
     use_oracle_code: bool | None = None
     """If True, uses pre-defined oracle code instead of querying the model."""
 
+    # Visual differencing model (used when use_img_differencing/use_video_differencing is on).
+    # Defaults of None mean "use whatever the YAML / LaunchArgs default specifies".
+    visual_differencing_model: str | None = None
+    visual_differencing_model_server_url: str | None = None
+    visual_differencing_model_api_key: str | None = None
+
 
 def main(args: BatchLaunchArgs) -> None:
     """Run multiple experiments sequentially."""
@@ -235,7 +241,7 @@ def main(args: BatchLaunchArgs) -> None:
                     current_output_dir = os.path.join(current_output_dir, model_dir, config_stem)
 
                 # Create LaunchArgs with the current config_path and global overrides
-                launch_args = LaunchArgs(
+                launch_kwargs = dict(
                     config_path=config_path,
                     server_url=args.server_url,
                     model=model,
@@ -253,6 +259,13 @@ def main(args: BatchLaunchArgs) -> None:
                     debug=args.debug,
                     use_oracle_code=args.use_oracle_code,
                 )
+                if args.visual_differencing_model is not None:
+                    launch_kwargs["visual_differencing_model"] = args.visual_differencing_model
+                if args.visual_differencing_model_server_url is not None:
+                    launch_kwargs["visual_differencing_model_server_url"] = args.visual_differencing_model_server_url
+                if args.visual_differencing_model_api_key is not None:
+                    launch_kwargs["visual_differencing_model_api_key"] = args.visual_differencing_model_api_key
+                launch_args = LaunchArgs(**launch_kwargs)
 
                 launch_main(launch_args)
 

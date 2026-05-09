@@ -35,7 +35,7 @@ dependencies = [
   "pycocotools",
   "pyyaml",
   "omegaconf",
-  "open3d",
+  "open3d==0.18.0",
   "pyroki @ git+https://github.com/chungmin99/pyroki.git",
   "robot_descriptions>=1.16.0",
   "yourdfpy>=0.0.56",

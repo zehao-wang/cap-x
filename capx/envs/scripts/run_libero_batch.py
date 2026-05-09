@@ -68,6 +68,15 @@ class LiberoBatchLaunchArgs:
     debug: bool = False
     use_oracle_code: bool | None = None
 
+    # Visual differencing model (used when use_img_differencing/use_video_differencing is on).
+    # Defaults of None mean "use whatever the YAML / LaunchArgs default specifies".
+    visual_differencing_model: str | None = None
+    visual_differencing_model_server_url: str | None = None
+    visual_differencing_model_api_key: str | None = None
+
+    # Cap on tasks per suite (for fast smoke tests). None = run all tasks.
+    max_tasks_per_suite: int | None = None
+
 
 def main(args: LiberoBatchLaunchArgs) -> None:
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -91,9 +100,11 @@ def main(args: LiberoBatchLaunchArgs) -> None:
             
         task_suite = benchmark_dict[suite_name]()
         num_tasks = task_suite.n_tasks
-        
+        if args.max_tasks_per_suite is not None:
+            num_tasks = min(num_tasks, args.max_tasks_per_suite)
+
         print(f"Suite {suite_name} has {num_tasks} tasks.")
-        
+
         for task_id in range(num_tasks):
             task = task_suite.get_task(task_id)
             task_name = task.name
@@ -185,7 +196,7 @@ def main(args: LiberoBatchLaunchArgs) -> None:
                 yaml.dump(config, f)
             
             # Create LaunchArgs
-            launch_args = LaunchArgs(
+            launch_kwargs = dict(
                 config_path=config_path,
                 server_url=args.server_url,
                 model=model,
@@ -200,10 +211,19 @@ def main(args: LiberoBatchLaunchArgs) -> None:
                 num_workers=args.num_workers,
                 record_video=args.record_video,
                 # We do NOT pass output_dir here to avoid the logic that uses config_stem
-                output_dir=None, 
+                output_dir=None,
                 debug=args.debug,
                 use_oracle_code=args.use_oracle_code,
             )
+            # Only override VDM fields when user explicitly set them; otherwise fall
+            # back to LaunchArgs / YAML defaults via launch_utils.
+            if args.visual_differencing_model is not None:
+                launch_kwargs["visual_differencing_model"] = args.visual_differencing_model
+            if args.visual_differencing_model_server_url is not None:
+                launch_kwargs["visual_differencing_model_server_url"] = args.visual_differencing_model_server_url
+            if args.visual_differencing_model_api_key is not None:
+                launch_kwargs["visual_differencing_model_api_key"] = args.visual_differencing_model_api_key
+            launch_args = LaunchArgs(**launch_kwargs)
             
             try:
                 launch_main(launch_args)

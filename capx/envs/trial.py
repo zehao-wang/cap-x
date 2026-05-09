@@ -18,6 +18,7 @@ import gc
 import io
 import json
 import os
+import pathlib
 import time
 from typing import Any
 
@@ -650,6 +651,15 @@ def _run_single_trial(
 
     # --- 1. Reset environment ---
     obs, _ = env.reset(options={"trial": trial}, seed=trial)
+    # Per-trial artifact dir for SAM3/Molmo intermediate dumps. The reduced
+    # APIs read this off the env they were constructed with — for code-exec
+    # envs that's `low_level_env`, not the top-level wrapper. Set both so the
+    # attribute is visible regardless of wrapping.
+    if config.get("output_dir"):
+        trial_dir_inflight = os.path.join(config["output_dir"], f"trial_{trial:02d}")
+        env.trial_artifact_dir = trial_dir_inflight
+        if hasattr(env, "low_level_env"):
+            env.low_level_env.trial_artifact_dir = trial_dir_inflight
     # Reset the SIGALRM timer AFTER env.reset() so the timeout only covers
     # actual task execution, not scene loading / cuRobo JIT compilation.
     import signal
@@ -913,6 +923,32 @@ def _run_single_trial(
         ensemble_data=ensemble_data,
         multiturn_ensemble_data=multiturn_ensemble_data,
     )
+
+    # Move per-trial intermediate dumps (sam3_dumps/, molmo_dumps/) from the
+    # inflight `trial_NN/` dir into the result-suffixed dir built by
+    # _save_trial_artifacts so each episode's artifacts live together.
+    if config.get("output_dir"):
+        import shutil
+        inflight = pathlib.Path(config["output_dir"]) / f"trial_{trial:02d}"
+        final_trial_dir = (
+            pathlib.Path(config["output_dir"])
+            / f"trial_{trial:02d}_sandboxrc_{info_step['sandbox_rc']}"
+            f"_reward_{reward:.3f}_taskcompleted_{int(info_step.get('task_completed', False))}"
+        )
+        if inflight.exists() and inflight.is_dir():
+            final_trial_dir.mkdir(parents=True, exist_ok=True)
+            for src in inflight.iterdir():
+                dst = final_trial_dir / src.name
+                if dst.exists():
+                    if dst.is_dir():
+                        shutil.rmtree(dst)
+                    else:
+                        dst.unlink()
+                shutil.move(str(src), str(dst))
+            try:
+                inflight.rmdir()
+            except OSError:
+                pass
 
     # Save per-turn and combined videos
     if recording_frames and turn_frame_ranges:

@@ -1,3 +1,4 @@
+import os
 import pathlib
 import time
 from typing import Any
@@ -38,8 +39,11 @@ from capx.utils.depth_utils import depth_color_to_pointcloud, depth_to_pointclou
 from capx.utils.visualization_utils import (
     draw_molmo_point,
     draw_oriented_bounding_box,
+    dump_sam3_call,
+    dump_sam3_point_call,
     overlay_segmentation_masks,
     render_cylinder_axis,
+    resolve_dump_dir,
 )
 
 
@@ -260,6 +264,12 @@ class FrankaControlApiReduced(ApiBase):
         """
         self._log_step("SAM3 Point Segmentation", f"Running SAM3 point-prompt at ({point_coords[0]}, {point_coords[1]}) …", images=rgb)
         results = self.sam3_point_prompt_fn(Image.fromarray(rgb), point_coords)
+        dump_dir = resolve_dump_dir(self._env, "CAPX_SAM3_DUMP_DIR", "sam3_dumps")
+        if dump_dir:
+            try:
+                dump_sam3_point_call(rgb, point_coords, results, dump_dir)
+            except Exception as e:
+                print(f"[segment_sam3_point_prompt] dump failed: {e}")
         masks = [r["mask"] for r in results if r.get("score", 0) > 0.05]
         if masks:
             vis = overlay_segmentation_masks(rgb, masks)
@@ -298,6 +308,12 @@ class FrankaControlApiReduced(ApiBase):
         """
         self._log_step("SAM3 Text Segmentation", f"Running SAM3 text-prompt: '{text_prompt}' …", images=rgb)
         results = self.sam3_seg_fn(rgb, text_prompt=text_prompt)
+        dump_dir = resolve_dump_dir(self._env, "CAPX_SAM3_DUMP_DIR", "sam3_dumps")
+        if dump_dir:
+            try:
+                dump_sam3_call(rgb, text_prompt, results, dump_dir)
+            except Exception as e:
+                print(f"[segment_sam3_text_prompt] dump failed: {e}")
         masks = [r["mask"] for r in results if r.get("score", 0) > 0.05]
         if masks:
             best_score = max(r.get("score", 0) for r in results)
@@ -336,6 +352,13 @@ class FrankaControlApiReduced(ApiBase):
             self._log_step_update(text=f"Result: {result}", images=molmo_image)
         else:
             self._log_step_update(text="No point found.")
+        dump_dir = resolve_dump_dir(self._env, "CAPX_MOLMO_DUMP_DIR", "molmo_dumps")
+        if dump_dir:
+            try:
+                from capx.utils.visualization_utils import dump_molmo_call
+                dump_molmo_call(image, text_prompt, result, dump_dir)
+            except Exception as e:
+                print(f"[point_prompt_molmo] dump failed: {e}")
         return result
 
     def get_oriented_bounding_box_from_3d_points(self, points: np.ndarray) -> dict[str, Any]:
