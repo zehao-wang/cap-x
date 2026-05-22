@@ -65,8 +65,23 @@ case "$MODE" in
         DEBUG_FLAG=""
         OUTPUT_SUFFIX="full"
         ;;
+    custom)
+        # Subset run. Caller must export CAPX_CONFIGS (space-separated list of
+        # YAML paths relative to repo root) and CAPX_OUTPUT_SUFFIX. Optional:
+        # CAPX_TOTAL_TRIALS (empty → YAML default).
+        if [[ -z "${CAPX_CONFIGS:-}" || -z "${CAPX_OUTPUT_SUFFIX:-}" ]]; then
+            echo "ERROR: custom mode requires CAPX_CONFIGS and CAPX_OUTPUT_SUFFIX." >&2
+            exit 1
+        fi
+        # shellcheck disable=SC2206
+        CONFIGS=( $CAPX_CONFIGS )
+        TOTAL_TRIALS="${CAPX_TOTAL_TRIALS:-}"
+        : "${NUM_WORKERS:=8}"
+        DEBUG_FLAG=""
+        OUTPUT_SUFFIX="$CAPX_OUTPUT_SUFFIX"
+        ;;
     *)
-        echo "Usage: $0 [debug|full]" >&2
+        echo "Usage: $0 [debug|full|custom]" >&2
         exit 1
         ;;
 esac
