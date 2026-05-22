@@ -94,11 +94,21 @@ def create_app() -> FastAPI:
 
         When a config_path was provided on the CLI, ``auto_start`` is set to
         ``True`` so the frontend can kick off the trial immediately after load.
+        Also returns the model/server-url defaults so the browser doesn't
+        fall back to its hardcoded OpenRouter-localhost values.
         """
         default_path = getattr(app.state, "default_config_path", None)
         return {
             "config_path": default_path,
             "auto_start": default_path is not None,
+            "model": getattr(app.state, "default_model", None),
+            "server_url": getattr(app.state, "default_server_url", None),
+            "visual_differencing_model": getattr(
+                app.state, "default_visual_differencing_model", None
+            ),
+            "visual_differencing_model_server_url": getattr(
+                app.state, "default_visual_differencing_model_server_url", None
+            ),
         }
 
     @app.get("/api/configs", response_model=ConfigListResponse)

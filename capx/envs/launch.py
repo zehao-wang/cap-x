@@ -192,6 +192,14 @@ def _run_web_ui(args: LaunchArgs, config: dict[str, Any]) -> None:
     port = int(config.get("web_ui_port", 8200))
     app = create_app()
     app.state.default_config_path = args.config_path
+    # Forward CLI-supplied model/server defaults so the browser doesn't reset
+    # to the OpenRouter localhost defaults on first load.
+    app.state.default_model = args.model
+    app.state.default_server_url = args.server_url
+    app.state.default_visual_differencing_model = args.visual_differencing_model
+    app.state.default_visual_differencing_model_server_url = (
+        args.visual_differencing_model_server_url
+    )
     print(f"\n  CaP-X Interactive Web UI: http://localhost:{port}\n")
     uvicorn.run(app, host="0.0.0.0", port=port)
 

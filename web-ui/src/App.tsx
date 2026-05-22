@@ -10,6 +10,8 @@ function App() {
   const trial = useTrialState();
   const [model, setModel] = useState('google/gemini-3.1-pro-preview');
   const [serverUrl, setServerUrl] = useState('http://127.0.0.1:8110/chat/completions');
+  const [vdmModel, setVdmModel] = useState<string | null>('google/gemini-3.1-pro-preview');
+  const [vdmServerUrl, setVdmServerUrl] = useState<string | null>('http://127.0.0.1:8110/chat/completions');
   const [temperature, setTemperature] = useState(1.0);
   const [awaitUserInput, setAwaitUserInput] = useState(true);
   const [executionTimeout, setExecutionTimeout] = useState(180);
@@ -60,6 +62,17 @@ function App() {
         const configPath = data.config_path || FALLBACK_CONFIG;
         const shouldAutoStart = data.auto_start === true;
 
+        // Apply server-supplied model/server-url defaults (e.g. when launch.py
+        // was invoked with --server-url / --model pointing at a vLLM node).
+        if (data.model) setModel(data.model);
+        if (data.server_url) setServerUrl(data.server_url);
+        if (data.visual_differencing_model !== undefined) {
+          setVdmModel(data.visual_differencing_model);
+        }
+        if (data.visual_differencing_model_server_url !== undefined) {
+          setVdmServerUrl(data.visual_differencing_model_server_url);
+        }
+
         const loaded = await trial.loadConfig(configPath);
 
         if (shouldAutoStart && loaded) {
@@ -81,6 +94,8 @@ function App() {
         config_path: trial.configPath,
         model,
         server_url: serverUrl,
+        visual_differencing_model: vdmModel,
+        visual_differencing_model_server_url: vdmServerUrl,
         temperature,
         await_user_input_each_turn: awaitUserInput,
         execution_timeout: executionTimeout,
