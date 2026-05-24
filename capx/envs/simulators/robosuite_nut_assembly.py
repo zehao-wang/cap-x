@@ -24,6 +24,7 @@ from viser.extras import ViserUrdf
 from capx.envs.simulators.robosuite_base import RobosuiteBaseEnv
 from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import depth_color_to_pointcloud
+from capx.utils.viser_history import ViserFrameHistory
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -132,8 +133,7 @@ class FrankaRobosuiteNutAssembly(RobosuiteBaseEnv):
             self.mjcf_ee_frame_handle = None
             self.mjcf_gripper_frame_handle = None
             self.urdf_vis = None
-            self.viser_img_handle = None
-            self.image_frustum_handle = None
+            self.frame_history: ViserFrameHistory | None = None
             self.gripper_metric_length = 0.0584
             self.urdf = load_robot_description("panda_description")
             self.urdf_vis = ViserUrdf(self.viser_server, urdf_or_path=self.urdf, load_meshes=True)
@@ -155,6 +155,9 @@ class FrankaRobosuiteNutAssembly(RobosuiteBaseEnv):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if seed is not None:
             self._rng = np.random.default_rng(seed)
+
+        if getattr(self, "frame_history", None) is not None:
+            self.frame_history.clear()
 
         first_obs = self.robosuite_env.reset()
         self.home_joint_position = np.array(first_obs["robot0_joint_pos"], dtype=np.float64)
@@ -417,17 +420,27 @@ class FrankaRobosuiteNutAssembly(RobosuiteBaseEnv):
             self.urdf_vis.update_cfg(action_joint_copy)
 
             rbg_imgs = obs_get_rgb(obs)
+
+            if self.frame_history is None:
+                self.frame_history = ViserFrameHistory(
+                    self.viser_server,
+                    urdf_vis=self.urdf_vis,
+                    render_aspect=self._render_width / self._render_height,
+                )
+            cameras_for_history = {
+                k: {
+                    "image": rbg_imgs[k],
+                    "pose_xyz_wxyz": obs[k].get("pose") if k in obs else None,
+                }
+                for k in rbg_imgs
+            }
+            self.frame_history.record(
+                cameras_for_history,
+                joints=action_joint_copy,
+                step=self._sim_step_count,
+            )
+
             for image_key in rbg_imgs:
-                self.viser_img_handle.image = rbg_imgs[image_key]
-
-                if "pose" in obs[image_key]:
-                    self.image_frustum_handle.position = obs[image_key]["pose"][:3]
-                    self.image_frustum_handle.wxyz = obs[image_key]["pose"][3:]
-                    self.image_frustum_handle.image = rbg_imgs[image_key]
-                else:
-                    self.image_frustum_handle.visible = False
-
-                # Point cloud from depth
                 if "depth" in obs[image_key].get("images", {}):
                     points_robot, colors = depth_color_to_pointcloud(
                         obs[image_key]["images"]["depth"][:, :, 0],
@@ -517,20 +530,6 @@ class FrankaRobosuiteNutAssembly(RobosuiteBaseEnv):
 
             self.mjcf_gripper_frame_handle = self.viser_server.scene.add_frame(
                 "/panda_gripper_target_mjcf", axes_length=0.15, axes_radius=0.005
-            )
-
-        if self.viser_img_handle is None:
-            img_init = np.zeros((480, 640, 3), dtype=np.uint8)
-            self.viser_img_handle = self.viser_server.gui.add_image(img_init, label="Mujoco render")
-
-        if self.image_frustum_handle is None:
-            self.image_frustum_handle = self.viser_server.scene.add_camera_frustum(
-                name="robot0_robotview",
-                position=(0, 0, 0),
-                wxyz=(1, 0, 0, 0),
-                fov=1.0,
-                aspect=self._render_width / self._render_height,
-                scale=0.05,
             )
 
 

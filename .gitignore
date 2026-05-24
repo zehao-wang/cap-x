@@ -38,6 +38,10 @@ core.*
 wandb/
 .webui_secret_key
 
+.venv
+.venv-libero
+logs/
+
 *.jpg
 *.png
 *.jpeg

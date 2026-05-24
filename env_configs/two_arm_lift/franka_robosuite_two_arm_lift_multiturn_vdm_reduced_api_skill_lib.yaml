@@ -5,6 +5,7 @@ env:
   cfg:
     _target_: capx.envs.tasks.base.CodeExecEnvConfig
     low_level: two_arm_lift_robosuite  # Registry name for low-level env
+    viser_debug: true  # enable per-trial observation history + slider in Viser
     apis:
       - FrankaControlApiReducedSkillLibraryBimanual
     prompt: |

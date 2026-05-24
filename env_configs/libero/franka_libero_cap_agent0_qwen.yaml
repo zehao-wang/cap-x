@@ -13,6 +13,7 @@ env:
       privileged: false
       max_steps: 8000
       control_freq: 20
+      viser_debug: true  # enable per-trial observation history + slider in Viser
     privileged: false
     apis:
       - FrankaLiberoApiReducedSkillLibrary

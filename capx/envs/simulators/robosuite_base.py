@@ -18,6 +18,7 @@ from robosuite.utils.camera_utils import get_real_depth_map
 from capx.envs.base import BaseEnv
 from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import depth_color_to_pointcloud
+from capx.utils.viser_history import ViserFrameHistory
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -101,8 +102,7 @@ class RobosuiteBaseEnv(BaseEnv):
             self.pyroki_ee_frame_handle = None
             self.mjcf_ee_frame_handle = None
             self.urdf_vis = None
-            self.viser_img_handle = None
-            self.image_frustum_handle = None
+            self.frame_history: ViserFrameHistory | None = None
             self.gripper_metric_length = 0.0584
             self.cube_points = None
             self.cube_color = None
@@ -407,17 +407,29 @@ class RobosuiteBaseEnv(BaseEnv):
             self.mjcf_ee_frame_handle.wxyz = obs_cartesian[3:]
 
             rbg_imgs = obs_get_rgb(obs)
+
+            # Hand the images + poses to the history helper (lazy init).
+            if self.frame_history is None:
+                self.frame_history = ViserFrameHistory(
+                    self.viser_server,
+                    urdf_vis=self.urdf_vis,
+                    render_aspect=self._render_width / self._render_height,
+                )
+            cameras_for_history = {
+                k: {
+                    "image": rbg_imgs[k],
+                    "pose_xyz_wxyz": obs[k].get("pose") if k in obs else None,
+                }
+                for k in rbg_imgs
+            }
+            self.frame_history.record(
+                cameras_for_history,
+                step=self._sim_step_count,
+            )
+
+            # Pointclouds aren't part of the per-step observation history —
+            # they're tied to specific decision points so always reflect now.
             for image_key in rbg_imgs:
-                self.viser_img_handle.image = rbg_imgs[image_key]
-
-                if "pose" in obs[image_key]:
-                    self.image_frustum_handle.position = obs[image_key]["pose"][:3]
-                    self.image_frustum_handle.wxyz = obs[image_key]["pose"][3:]
-                    self.image_frustum_handle.image = rbg_imgs[image_key]
-                else:
-                    self.image_frustum_handle.visible = False
-
-                # Point cloud from depth (use whichever camera has depth)
                 if "depth" in obs[image_key].get("images", {}):
                     points, colors = depth_color_to_pointcloud(
                         obs[image_key]["images"]["depth"][:, :, 0],
@@ -464,13 +476,6 @@ class RobosuiteBaseEnv(BaseEnv):
                     axes_radius=0.0015,
                 )
 
-    def update_viser_image(self, frame: np.ndarray) -> None:
-        if self.viser_server is None:
-            return
-        self._viser_init_check()
-        if self.viser_img_handle is not None:
-            self.viser_img_handle.image = frame
-
     def _viser_init_check(self) -> None:
         if self.viser_server is None:
             return
@@ -478,20 +483,6 @@ class RobosuiteBaseEnv(BaseEnv):
         if self.mjcf_ee_frame_handle is None:
             self.mjcf_ee_frame_handle = self.viser_server.scene.add_frame(
                 "/panda_ee_target_mjcf", axes_length=0.15, axes_radius=0.005
-            )
-
-        if self.viser_img_handle is None:
-            img_init = np.zeros((480, 640, 3), dtype=np.uint8)
-            self.viser_img_handle = self.viser_server.gui.add_image(img_init, label="Mujoco render")
-
-        if self.image_frustum_handle is None:
-            self.image_frustum_handle = self.viser_server.scene.add_camera_frustum(
-                name="robot0_robotview",
-                position=(0, 0, 0),
-                wxyz=(1, 0, 0, 0),
-                fov=1.0,
-                aspect=self._render_width / self._render_height,
-                scale=0.05,
             )
 
 

@@ -6,6 +6,7 @@ env:
     _target_: capx.envs.tasks.base.CodeExecEnvConfig
     low_level: franka_robosuite_nut_assembly_low_level_visual  # Use Robosuite instead of MuJoCo!
     privileged: true
+    viser_debug: true  # enable per-trial observation history + slider in Viser
     apis:
       - FrankaControlApiReducedSkillLibrary
     prompt: |

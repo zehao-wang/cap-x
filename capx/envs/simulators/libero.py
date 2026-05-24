@@ -16,6 +16,7 @@ from capx.envs.base import BaseEnv
 from capx.integrations.libero import load_libero_task
 from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import depth_color_to_pointcloud
+from capx.utils.viser_history import ViserFrameHistory
 
 here = os.path.dirname(os.path.abspath(__file__))
 vendor_root = os.path.normpath(os.path.join(here, "..", "third_party", "LIBERO"))
@@ -126,8 +127,7 @@ class FrankaLiberoEnv(BaseEnv):
             self.mjcf_ee_frame_handle = None
             self.mjcf_gripper_frame_handle = None
             self.urdf_vis = None
-            self.viser_img_handle = None
-            self.image_frustum_handle = None
+            self.frame_history: ViserFrameHistory | None = None
             self.urdf = load_robot_description("panda_description")
             self.urdf_vis = ViserUrdf(self.viser_server, urdf_or_path=self.urdf, load_meshes=True)
             self._viser_init_check()
@@ -152,6 +152,9 @@ class FrankaLiberoEnv(BaseEnv):
         if seed is not None:
             # NOTE: currently not used
             self._rng = np.random.default_rng(seed)
+
+        if getattr(self, "frame_history", None) is not None:
+            self.frame_history.clear()
 
         # We call handle.reset, but then we might want to override the init state
         libero_obs, libero_info = self.handle.reset(seed=seed)
@@ -613,6 +616,10 @@ class FrankaLiberoEnv(BaseEnv):
         """Update only the URDF visualization — fast, no observation render."""
         if not self.viser_debug or self.viser_server is None:
             return
+        # Skip while the playback slider is scrubbing a past frame so we
+        # don't immediately overwrite the URDF pose the user is inspecting.
+        if self.frame_history is not None and not self.frame_history.live:
+            return
         self._viser_init_check()
         joints = np.array(
             self.handle.env.sim.data.qpos[self._panda_joint_qpos_addrs], dtype=np.float64
@@ -635,27 +642,33 @@ class FrankaLiberoEnv(BaseEnv):
             self.urdf_vis.update_cfg(action_joint_copy)
 
             rbg_imgs = obs_get_rgb(obs)
-            # Use agentview as the primary camera for visualization (same as API)
-            camera_key = "agentview"
-            # camera_key = "robot0_eye_in_hand"
 
-            if camera_key in rbg_imgs:
-                self.viser_img_handle.image = rbg_imgs[camera_key]
-
-                if "pose" in obs[camera_key]:
-                    self.image_frustum_handle.position = obs[camera_key]["pose"][:3]
-                    self.image_frustum_handle.wxyz = obs[camera_key]["pose"][3:]
-                    self.image_frustum_handle.image = rbg_imgs[camera_key]
-                else:
-                    self.image_frustum_handle.visible = False
-
-                self.viser_server.scene.add_frame(
-                    camera_key,
-                    position=obs[camera_key]["pose"][:3],
-                    wxyz=obs[camera_key]["pose"][3:],
-                    axes_length=0.05,
-                    axes_radius=0.005,
+            # Hand all cameras to the history helper: it owns the GUI image,
+            # the on-scene frustums, and the Camera/Timestep/Live widgets.
+            if self.frame_history is None:
+                self.frame_history = ViserFrameHistory(
+                    self.viser_server,
+                    urdf_vis=self.urdf_vis,
+                    render_aspect=self._render_width / self._render_height,
                 )
+            cameras_for_history = {
+                k: {
+                    "image": rbg_imgs[k],
+                    "pose_xyz_wxyz": obs[k].get("pose") if k in obs else None,
+                }
+                for k in rbg_imgs
+            }
+            self.frame_history.record(
+                cameras_for_history,
+                joints=action_joint_copy,
+                gripper_fraction=self._gripper_fraction,
+                step=self._sim_step_count,
+            )
+
+            # The scene-tree parent at "agentview/" — needed so the point
+            # cloud below transforms into world coords — is now owned by
+            # ``frame_history`` and updated on every record().
+            camera_key = "agentview"
 
             # Visualize point cloud if depth is available
             if camera_key in obs and "depth" in obs[camera_key]["images"]:
@@ -714,13 +727,6 @@ class FrankaLiberoEnv(BaseEnv):
                     axes_radius=0.0015,
                 )
 
-    def update_viser_image(self, frame: np.ndarray) -> None:
-        if self.viser_server is None:
-            return
-        self._viser_init_check()
-        if self.viser_img_handle is not None:
-            self.viser_img_handle.image = frame
-
     def _viser_init_check(self) -> None:
         if self.viser_server is None:
             return
@@ -732,21 +738,6 @@ class FrankaLiberoEnv(BaseEnv):
 
             self.mjcf_gripper_frame_handle = self.viser_server.scene.add_frame(
                 "/panda_gripper_target_mjcf", axes_length=0.15, axes_radius=0.005
-            )
-
-        if self.viser_img_handle is None:
-            img_init = np.zeros((480, 640, 3), dtype=np.uint8)
-            self.viser_img_handle = self.viser_server.gui.add_image(img_init, label="Mujoco render")
-
-        if self.image_frustum_handle is None:
-            # Initialize with a generic name; actual camera will be set during updates
-            self.image_frustum_handle = self.viser_server.scene.add_camera_frustum(
-                name="main_camera",
-                position=(0, 0, 0),
-                wxyz=(1, 0, 0, 0),
-                fov=1.0,
-                aspect=self._render_width / self._render_height,
-                scale=0.05,
             )
 
 

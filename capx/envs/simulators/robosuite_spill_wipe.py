@@ -106,6 +106,9 @@ class FrankaRobosuiteSpillWipeLowLevel(RobosuiteBaseEnv):
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
+        if getattr(self, "frame_history", None) is not None:
+            self.frame_history.clear()
+
         self.robosuite_env.reset()
         # Adjust initial orientation
         self.robosuite_env.sim.data.qpos[6] -= np.pi
@@ -214,18 +217,29 @@ class FrankaRobosuiteSpillWipeLowLevel(RobosuiteBaseEnv):
 
             from capx.utils.camera_utils import obs_get_rgb
             from capx.utils.depth_utils import depth_color_to_pointcloud
+            from capx.utils.viser_history import ViserFrameHistory
 
             rbg_imgs = obs_get_rgb(obs)
+
+            if getattr(self, "frame_history", None) is None:
+                self.frame_history = ViserFrameHistory(
+                    self.viser_server,
+                    urdf_vis=getattr(self, "urdf_vis", None),
+                    render_aspect=self._render_width / self._render_height,
+                )
+            cameras_for_history = {
+                k: {
+                    "image": rbg_imgs[k],
+                    "pose_xyz_wxyz": obs[k].get("pose") if k in obs else None,
+                }
+                for k in rbg_imgs
+            }
+            self.frame_history.record(
+                cameras_for_history,
+                step=self._sim_step_count,
+            )
+
             for image_key in rbg_imgs:
-                self.viser_img_handle.image = rbg_imgs[image_key]
-
-                if "pose" in obs[image_key]:
-                    self.image_frustum_handle.position = obs[image_key]["pose"][:3]
-                    self.image_frustum_handle.wxyz = obs[image_key]["pose"][3:]
-                    self.image_frustum_handle.image = rbg_imgs[image_key]
-                else:
-                    self.image_frustum_handle.visible = False
-
                 if "depth" in obs[image_key].get("images", {}):
                     points, colors = depth_color_to_pointcloud(
                         obs[image_key]["images"]["depth"][:, :, 0],

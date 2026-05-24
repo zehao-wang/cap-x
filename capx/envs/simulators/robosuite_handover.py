@@ -27,6 +27,7 @@ from viser.extras import ViserUrdf
 from capx.envs.base import BaseEnv
 from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import depth_color_to_pointcloud
+from capx.utils.viser_history import ViserFrameHistory
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -163,8 +164,7 @@ class RobosuiteHandoverEnv(BaseEnv):
             self.pyroki_ee_frame_handle = None
             self.mjcf_ee_frame_handle = None
             self.mjcf_ee_frame_handle_arm1 = None
-            self.viser_img_handle = None
-            self.image_frustum_handle = None
+            self.frame_history: ViserFrameHistory | None = None
             self.handle_frame_handle = None
             self.grasp_pose_handle_arm0 = None
             self.grasp_pose_handle_arm1 = None
@@ -188,6 +188,9 @@ class RobosuiteHandoverEnv(BaseEnv):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if seed is not None:
             self._rng = np.random.default_rng(seed)
+
+        if getattr(self, "frame_history", None) is not None:
+            self.frame_history.clear()
 
         self.robosuite_env.reset()
 
@@ -748,15 +751,24 @@ class RobosuiteHandoverEnv(BaseEnv):
                     self.handle_frame_handle.wxyz = handle_pose[3:]
 
                 rbg_imgs = obs_get_rgb(obs)
-                for image_key in rbg_imgs:
-                    self.viser_img_handle.image = rbg_imgs[image_key]
 
-                    if "pose" in obs[image_key]:
-                        self.image_frustum_handle.position = obs[image_key]["pose"][:3]
-                        self.image_frustum_handle.wxyz = obs[image_key]["pose"][3:]
-                        self.image_frustum_handle.image = rbg_imgs[image_key]
-                    else:
-                        self.image_frustum_handle.visible = False
+                if self.frame_history is None:
+                    self.frame_history = ViserFrameHistory(
+                        self.viser_server,
+                        urdf_vis=self.urdf_vis_arm0,
+                        render_aspect=self._render_width / self._render_height,
+                    )
+                cameras_for_history = {
+                    k: {
+                        "image": rbg_imgs[k],
+                        "pose_xyz_wxyz": obs[k].get("pose") if k in obs else None,
+                    }
+                    for k in rbg_imgs
+                }
+                self.frame_history.record(
+                    cameras_for_history,
+                    step=self._sim_step_count,
+                )
 
                 camera_key = "robot0_robotview" if "robot0_robotview" in obs else "agentview"
                 if camera_key in obs and "images" in obs[camera_key] and "depth" in obs[camera_key]["images"]:
@@ -784,13 +796,6 @@ class RobosuiteHandoverEnv(BaseEnv):
             print(f"Warning: Viser update failed: {e}")
             traceback.print_exc()
 
-    def update_viser_image(self, frame: np.ndarray) -> None:
-        if self.viser_server is None:
-            return
-        self._viser_init_check()
-        if self.viser_img_handle is not None:
-            self.viser_img_handle.image = frame
-
     def _viser_init_check(self) -> None:
         if self.viser_server is None:
             return
@@ -813,20 +818,6 @@ class RobosuiteHandoverEnv(BaseEnv):
         if self.handle_frame_handle is None:
             self.handle_frame_handle = self.viser_server.scene.add_frame(
                 "/handle_frame", axes_length=0.08, axes_radius=0.002
-            )
-
-        if self.viser_img_handle is None:
-            img_init = np.zeros((480, 640, 3), dtype=np.uint8)
-            self.viser_img_handle = self.viser_server.gui.add_image(img_init, label="Mujoco render")
-
-        if self.image_frustum_handle is None:
-            self.image_frustum_handle = self.viser_server.scene.add_camera_frustum(
-                name="agentview",
-                position=(0, 0, 0),
-                wxyz=(1, 0, 0, 0),
-                fov=1.0,
-                aspect=self._render_width / self._render_height,
-                scale=0.05,
             )
 
 

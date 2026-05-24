@@ -30,6 +30,8 @@ interface ConfigStartControlProps {
   reset: () => void;
   model: string;
   serverUrl: string;
+  vdmModel: string | null;
+  vdmServerUrl: string | null;
   temperature: number;
   awaitUserInput: boolean;
 }
@@ -44,6 +46,8 @@ export function ConfigStartControl({
   reset,
   model,
   serverUrl,
+  vdmModel,
+  vdmServerUrl,
   temperature,
   awaitUserInput,
 }: ConfigStartControlProps) {
@@ -91,6 +95,8 @@ export function ConfigStartControl({
       config_path: configPath,
       model,
       server_url: serverUrl,
+      visual_differencing_model: vdmModel,
+      visual_differencing_model_server_url: vdmServerUrl,
       temperature,
       await_user_input_each_turn: awaitUserInput,
     });

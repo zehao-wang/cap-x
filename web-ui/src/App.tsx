@@ -6,12 +6,33 @@ import { VisualizationPanel } from './components/VisualizationPanel';
 
 const FALLBACK_CONFIG = 'env_configs/cube_stack/franka_robosuite_cube_stack.yaml';
 
+// Qwen 3.6 is served by our own vLLM node (port 8000, /v1 path). Every other
+// model in the dropdown goes through the OpenRouter-shaped local proxy. The
+// dropdown picks the model; the URL follows automatically.
+const QWEN_MODEL_ID = 'Qwen3.6-27B';
+const DEFAULT_QWEN_URL = 'http://127.0.0.1:8000/v1/chat/completions';
+const DEFAULT_OPENROUTER_URL = 'http://127.0.0.1:8110/chat/completions';
+const urlSlotFor = (m: string | null) =>
+  m === QWEN_MODEL_ID ? 'qwen' : 'openrouter';
+
 function App() {
   const trial = useTrialState();
-  const [model, setModel] = useState('google/gemini-3.1-pro-preview');
-  const [serverUrl, setServerUrl] = useState('http://127.0.0.1:8110/chat/completions');
-  const [vdmModel, setVdmModel] = useState<string | null>('google/gemini-3.1-pro-preview');
-  const [vdmServerUrl, setVdmServerUrl] = useState<string | null>('http://127.0.0.1:8110/chat/completions');
+  const [model, setModel] = useState(QWEN_MODEL_ID);
+  // Two remembered URLs — `serverUrl` (and `vdmServerUrl`) below are derived
+  // from the active model. Edits in the settings popover write back to the
+  // active slot so each model keeps its own URL across switches.
+  const [qwenUrl, setQwenUrl] = useState(DEFAULT_QWEN_URL);
+  const [openrouterUrl, setOpenrouterUrl] = useState(DEFAULT_OPENROUTER_URL);
+  const [vdmModel, setVdmModel] = useState<string | null>(QWEN_MODEL_ID);
+  const serverUrl =
+    urlSlotFor(model) === 'qwen' ? qwenUrl : openrouterUrl;
+  const vdmServerUrl =
+    urlSlotFor(vdmModel) === 'qwen' ? qwenUrl : openrouterUrl;
+
+  const setServerUrlForActiveModel = (newUrl: string) => {
+    if (urlSlotFor(model) === 'qwen') setQwenUrl(newUrl);
+    else setOpenrouterUrl(newUrl);
+  };
   const [temperature, setTemperature] = useState(1.0);
   const [awaitUserInput, setAwaitUserInput] = useState(true);
   const [executionTimeout, setExecutionTimeout] = useState(180);
@@ -64,13 +85,22 @@ function App() {
 
         // Apply server-supplied model/server-url defaults (e.g. when launch.py
         // was invoked with --server-url / --model pointing at a vLLM node).
+        // Route the URL into the matching slot so a later model switch in the
+        // dropdown still picks up the correct service.
         if (data.model) setModel(data.model);
-        if (data.server_url) setServerUrl(data.server_url);
+        if (data.server_url) {
+          if (urlSlotFor(data.model) === 'qwen') setQwenUrl(data.server_url);
+          else setOpenrouterUrl(data.server_url);
+        }
         if (data.visual_differencing_model !== undefined) {
           setVdmModel(data.visual_differencing_model);
         }
-        if (data.visual_differencing_model_server_url !== undefined) {
-          setVdmServerUrl(data.visual_differencing_model_server_url);
+        if (data.visual_differencing_model_server_url) {
+          if (urlSlotFor(data.visual_differencing_model) === 'qwen') {
+            setQwenUrl(data.visual_differencing_model_server_url);
+          } else {
+            setOpenrouterUrl(data.visual_differencing_model_server_url);
+          }
         }
 
         const loaded = await trial.loadConfig(configPath);
@@ -172,6 +202,8 @@ function App() {
               reset={trial.reset}
               model={model}
               serverUrl={serverUrl}
+              vdmModel={vdmModel}
+              vdmServerUrl={vdmServerUrl}
               temperature={temperature}
               awaitUserInput={awaitUserInput}
             />
@@ -186,6 +218,9 @@ function App() {
               disabled={isRunning}
               className="appearance-none pl-3 pr-7 py-1.5 bg-surface-sunken border border-surface-border rounded-md text-xs font-display text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/40 focus:border-accent/40 disabled:opacity-40 transition-all cursor-pointer"
             >
+              <optgroup label="Internal">
+                <option value={QWEN_MODEL_ID}>Qwen 3.6 27B (local vLLM)</option>
+              </optgroup>
               <optgroup label="Google">
                 <option value="google/gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
                 <option value="google/gemini-3.1-pro">Gemini 3.1 Pro</option>
@@ -267,7 +302,7 @@ function App() {
                       id="settings-server-url"
                       type="text"
                       value={serverUrl}
-                      onChange={(e) => setServerUrl(e.target.value)}
+                      onChange={(e) => setServerUrlForActiveModel(e.target.value)}
                       disabled={isRunning}
                       className="w-full px-3 py-2 bg-surface-sunken border border-surface-border rounded-md text-sm text-text-primary font-mono placeholder-text-tertiary focus:outline-none focus:ring-1 focus:ring-accent/40 focus:border-accent/40 disabled:opacity-40 transition-all"
                     />

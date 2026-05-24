@@ -924,6 +924,21 @@ def _run_single_trial(
         multiturn_ensemble_data=multiturn_ensemble_data,
     )
 
+    # Dump the viser observation history (per-step images + poses + joints)
+    # into the same inflight dir as the rest of the trial artifacts so it gets
+    # moved into the result-suffixed dir below. The save is a no-op when the
+    # env was created without viser, or when nothing was recorded yet.
+    if config.get("output_dir"):
+        for cand in (getattr(env, "low_level_env", None), env):
+            fh = getattr(cand, "frame_history", None) if cand is not None else None
+            if fh is None:
+                continue
+            try:
+                fh.save(os.path.join(env.trial_artifact_dir, "viser_history.npz"))
+            except Exception as exc:
+                print(f"[viser_history] save failed: {exc}")
+            break
+
     # Move per-trial intermediate dumps (sam3_dumps/, molmo_dumps/) from the
     # inflight `trial_NN/` dir into the result-suffixed dir built by
     # _save_trial_artifacts so each episode's artifacts live together.

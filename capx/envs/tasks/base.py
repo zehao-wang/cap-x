@@ -135,6 +135,29 @@ class CodeExecutionEnvBase(Env):
         """
         return self.low_level_env.compute_reward()
 
+    def close(self) -> None:
+        """Release resources held by the low-level env — most importantly its
+        viser server.
+
+        Each simulator starts its own ``viser.ViserServer()`` on construction.
+        The web UI builds a fresh env on every task switch / new trial and
+        tears the old one down. If the old server isn't stopped it keeps
+        holding its port (default 8080); viser then bumps the next env's
+        server to 8081+ (see its OSError retry loop) while the proxy's cached
+        port stays glued to the stale server — so the new task renders to a
+        viewer nobody is watching. Stopping it here frees the port so the next
+        env rebinds the same one. See capx/web/session_manager.py cleanup path.
+        """
+        low = getattr(self, "low_level_env", None)
+        server = getattr(low, "viser_server", None) if low is not None else None
+        if server is not None:
+            try:
+                server.stop()
+            except Exception:
+                pass
+            low.viser_server = None
+        super().close()
+
     # ---- Private methods ----
     def _get_complete_prompt(self) -> str:
         """

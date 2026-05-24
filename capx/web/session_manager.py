@@ -193,6 +193,17 @@ class SessionManager:
             except Exception:
                 pass
 
+        # Stop the env's viser server so its port frees up for the next task.
+        # Without this the old server is orphaned: the next env's viser bumps
+        # to a higher port while the proxy stays pinned to the stale one, so
+        # the new task's scene never reaches the browser (blank viewer).
+        if session.env is not None:
+            try:
+                await asyncio.to_thread(session.env.close)
+            except Exception as exc:
+                logger.warning(f"Error closing env during cleanup: {exc}")
+            session.env = None
+
         del self._sessions[session_id]
         logger.info(f"Session cleaned up: {session_id}")
 

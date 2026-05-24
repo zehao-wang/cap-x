@@ -22,6 +22,7 @@ from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.video_utils import resize_with_pad
 from capx.utils.depth_utils import depth_color_to_pointcloud
 from capx.utils.msgpack_server_client_utils import MsgpackNumpyServer
+from capx.utils.viser_history import ViserFrameHistory
 from robot_descriptions.loaders.yourdfpy import load_robot_description
 
 
@@ -145,8 +146,7 @@ class FrankaRealLowLevel(BaseEnv):
             self.mjcf_ee_frame_handle = None
             self.urdf_vis = None
             # self.urdf_mj_vis = None
-            self.viser_img_handle = None
-            self.image_frustum_handle = None
+            self.frame_history: ViserFrameHistory | None = None
             self.gripper_metric_length = 0.0584
             self.urdf = load_robot_description("panda_description")
             self.urdf_vis = ViserUrdf(self.viser_server, urdf_or_path=self.urdf, load_meshes=True)
@@ -172,6 +172,8 @@ class FrankaRealLowLevel(BaseEnv):
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if getattr(self, "frame_history", None) is not None:
+            self.frame_history.clear()
         while not self.obs.get("robot0_robotview", {}).get("images", {}).get("rgb") is not None:
             self._update_from_network()
             print("Waiting for observation from real environment...")
@@ -367,23 +369,28 @@ class FrankaRealLowLevel(BaseEnv):
             # self.mjcf_ee_frame_handle.wxyz = obs_cartesian[3:]
 
             rbg_imgs = obs_get_rgb(obs)
-            # if len(rbg_imgs.keys()) > 0:
+
+            if self.frame_history is None:
+                self.frame_history = ViserFrameHistory(
+                    self.viser_server,
+                    urdf_vis=self.urdf_vis,
+                )
+            cameras_for_history = {}
             for image_key in rbg_imgs:
-                self.viser_img_handle.image = rbg_imgs[image_key]
-
-                # if "pose" in obs[image_key]:
-                #     self.image_frustum_handle.position = obs[image_key]["pose"][:3]
-                #     self.image_frustum_handle.wxyz = obs[image_key]["pose"][3:]
-                #     self.image_frustum_handle.image = rbg_imgs[image_key]
-                # else:
-                #     self.image_frustum_handle.visible = False
-
+                pose = None
                 if "pose_mat" in obs[image_key]:
-                    self.image_frustum_handle.position = obs[image_key]["pose_mat"][:3, 3]
-                    self.image_frustum_handle.wxyz = vtf.SE3.from_matrix(obs[image_key]["pose_mat"]).rotation().wxyz
-                    self.image_frustum_handle.image = rbg_imgs[image_key]
-                else:
-                    self.image_frustum_handle.visible = False
+                    pose_mat = obs[image_key]["pose_mat"]
+                    pose_wxyz = vtf.SE3.from_matrix(pose_mat).rotation().wxyz
+                    pose = np.concatenate([pose_mat[:3, 3], pose_wxyz])
+                cameras_for_history[image_key] = {
+                    "image": rbg_imgs[image_key],
+                    "pose_xyz_wxyz": pose,
+                }
+            self.frame_history.record(
+                cameras_for_history,
+                joints=action_joint_copy,
+                step=getattr(self, "_sim_step_count", 0),
+            )
 
             # Temporary hardcode to visualise some stuff for debugging
             if "depth" in obs["robot0_robotview"]["images"]:
@@ -435,30 +442,10 @@ class FrankaRealLowLevel(BaseEnv):
                         axes_radius=0.0015,
                     )
 
-    def update_viser_image(self, frame: np.ndarray) -> None:
-        if self.viser_server is None:
-            return
-        self._viser_init_check()
-        if self.viser_img_handle is not None:
-            self.viser_img_handle.image = frame
-
     def _viser_init_check(self) -> None:
-        if self.viser_server is None:
-            return
-
-        if self.viser_img_handle is None:
-            img_init = np.zeros((480, 640, 3), dtype=np.uint8)
-            self.viser_img_handle = self.viser_server.gui.add_image(img_init, label="Camera View")
-
-        if self.image_frustum_handle is None:
-            self.image_frustum_handle = self.viser_server.scene.add_camera_frustum(
-                name="robot0_robotview",
-                position=(0, 0, 0),
-                wxyz=(1, 0, 0, 0),
-                fov=1.0,
-                aspect=1.0,
-                scale=0.05,
-            )
+        # All viser handles are now owned by ``frame_history``; nothing
+        # additional to lazily create here.
+        return
 
 
 __all__ = ["FrankaRealLowLevel"]
