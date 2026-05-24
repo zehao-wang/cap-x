@@ -156,6 +156,11 @@ class CodeExecutionEnvBase(Env):
             except Exception:
                 pass
             low.viser_server = None
+            # Drop the playback helper too — it pins the now-stopped server,
+            # and any later record()/clear() on it would touch a closed event
+            # loop. Nulling it lets a reused env rebuild against a fresh server.
+            if getattr(low, "frame_history", None) is not None:
+                low.frame_history = None
         super().close()
 
     # ---- Private methods ----

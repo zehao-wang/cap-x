@@ -81,6 +81,10 @@ class ViserFrameHistory:
         self._active_camera: Optional[str] = None
         self._known_cameras: list[str] = []
         self._suppress_callbacks: bool = False  # block re-entry while we set widgets
+        # Latched True once the underlying viser server's event loop closes
+        # (the web UI stops the server on task switch). A stale history then
+        # stops touching the server so it can't crash an in-flight trial.
+        self._defunct: bool = False
 
         # GUI + scene handles, all created lazily so we don't pollute the
         # viewer until the simulator actually records something.
@@ -131,21 +135,26 @@ class ViserFrameHistory:
     def clear(self) -> None:
         """Reset the buffer (call at the start of a new trial)."""
         self._frames.clear()
+        self._live = True
         # Don't tear down GUI/scene handles — reusing them across trials avoids
         # widget flicker. Reset slider to 0 and snap back to Live.
-        if self._gui_ready:
-            self._suppress_callbacks = True
-            try:
-                if self._slider is not None:
-                    self._slider.max = 0
-                    self._slider.value = 0
-                if self._live_toggle is not None:
-                    self._live_toggle.value = True
-                if self._step_label is not None:
-                    self._step_label.value = "0 / 0"
-            finally:
-                self._suppress_callbacks = False
-        self._live = True
+        if not self._gui_ready or not self._server_alive():
+            return
+        self._suppress_callbacks = True
+        try:
+            if self._slider is not None:
+                self._slider.max = 0
+                self._slider.value = 0
+            if self._live_toggle is not None:
+                self._live_toggle.value = True
+            if self._step_label is not None:
+                self._step_label.value = "0 / 0"
+        except RuntimeError:
+            # Server's loop closed between the liveness check and now (the
+            # task-switch teardown racing this reset). Go inert.
+            self._defunct = True
+        finally:
+            self._suppress_callbacks = False
 
     def save(self, path: str) -> None:
         """Dump the current buffer to ``path`` as a compressed ``.npz`` file.
@@ -273,25 +282,57 @@ class ViserFrameHistory:
                 kept.append(self._frames[-1])
             self._frames = kept
 
-        self._ensure_gui()
-        self._sync_cameras(frame)
-        self._refresh_slider_bounds()
+        # Buffering above is server-independent and must stay intact for
+        # save(); only the GUI/scene work below needs a live server.
+        if not self._server_alive():
+            return
 
-        # Update the live camera parent frames so any scene children the
-        # simulator added (or is about to add) under "{name}/..." reflect the
-        # current camera pose. Intentionally outside ``_render_frame`` so
-        # scrubbing the slider does NOT move parent frames, keeping any
-        # already-published live point cloud anchored to its capture pose.
-        for cam_name, snap in frame.cameras.items():
-            if snap.pose_xyz_wxyz is not None:
-                self._update_camera_parent(cam_name, snap.pose_xyz_wxyz)
+        try:
+            self._ensure_gui()
+            self._sync_cameras(frame)
+            self._refresh_slider_bounds()
 
-        if self._live:
-            self._render_frame(self._frames[-1])
+            # Update the live camera parent frames so any scene children the
+            # simulator added (or is about to add) under "{name}/..." reflect
+            # the current camera pose. Intentionally outside ``_render_frame``
+            # so scrubbing the slider does NOT move parent frames, keeping any
+            # already-published live point cloud anchored to its capture pose.
+            for cam_name, snap in frame.cameras.items():
+                if snap.pose_xyz_wxyz is not None:
+                    self._update_camera_parent(cam_name, snap.pose_xyz_wxyz)
+
+            if self._live:
+                self._render_frame(self._frames[-1])
+        except RuntimeError:
+            # Server stopped mid-update (task-switch teardown race). Go inert;
+            # buffered frames above are still saved at trial end.
+            self._defunct = True
 
     # ------------------------------------------------------------------
     # GUI plumbing
     # ------------------------------------------------------------------
+
+    def _server_alive(self) -> bool:
+        """False once the viser server's background event loop has closed.
+
+        The web UI stops the server on every task switch (see
+        ``CodeExecutionEnvBase.close``); a simulator may still hold this
+        history and call ``record``/``clear`` against it. Every GUI/scene
+        mutation then raises ``RuntimeError('Event loop is closed')``. We
+        check the loop up front and latch ``_defunct`` so a stale history
+        goes quietly inert instead of crashing the next trial.
+        """
+        if self._defunct:
+            return False
+        loop = getattr(
+            getattr(self.server, "_websock_server", None),
+            "_background_event_loop",
+            None,
+        )
+        if loop is not None and loop.is_closed():
+            self._defunct = True
+            return False
+        return True
 
     def _ensure_gui(self) -> None:
         """Create the slider/Live/label widgets. The Camera dropdown is built
