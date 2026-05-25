@@ -145,6 +145,19 @@ async def run_trial_async(
         logger.info(f"Instantiating environment for session {session.session_id}")
         env = await run_in_env_thread(instantiate, session.env_factory)
 
+        # Interactive mode has no max-step limit: the user drives the episode
+        # by hand and is protected by exec_timeout instead of a step horizon.
+        # Lift both the high-level truncation bound (low_level_env.max_steps,
+        # read in CodeExecutionEnvBase.step) and the underlying robosuite horizon
+        # (ignore_done) so move_to_joints never raises "executing action in
+        # terminated episode" mid-session. Headless/batch runs keep their limit.
+        low_level_env = getattr(env, "low_level_env", None)
+        if low_level_env is not None:
+            low_level_env.max_steps = 10**9
+            robosuite_env = getattr(low_level_env, "robosuite_env", None)
+            if robosuite_env is not None:
+                robosuite_env.ignore_done = True
+
         # Store env reference in session for safety interrupt
         session.env = env
 
