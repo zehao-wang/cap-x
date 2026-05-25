@@ -164,12 +164,30 @@ export interface ResumeCommand {
   type: 'resume';
 }
 
+// Human asks to reset the environment and replan (§9.1). Only honoured while
+// awaiting user input.
+export interface ResetCommand {
+  type: 'reset';
+}
+
+// Human confirms success and ends the trial (§9 / §4.1). Only honoured while
+// awaiting user input.
+export interface FinishCommand {
+  type: 'finish';
+}
+
 export interface UpdateSettingsCommand {
   type: 'update_settings';
   await_user_input_each_turn?: boolean;
 }
 
-export type WSCommand = InjectPromptCommand | StopCommand | ResumeCommand | UpdateSettingsCommand;
+export type WSCommand =
+  | InjectPromptCommand
+  | StopCommand
+  | ResumeCommand
+  | ResetCommand
+  | FinishCommand
+  | UpdateSettingsCommand;
 
 // ============================================================================
 // REST API Types

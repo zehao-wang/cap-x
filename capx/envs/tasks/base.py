@@ -288,6 +288,29 @@ class CodeExecutionEnvBase(Env):
         info.update({"task_prompt": self._task_prompt})
         return obs, info
 
+    def snapshot_state(self) -> dict[str, Any] | None:
+        """Snapshot the current episode state (delegates to the low-level env).
+
+        Used by the interactive web UI to return to the episode's start on a
+        human-requested reset (§9.1).
+        """
+        return self.low_level_env.snapshot_state()
+
+    def restore_state(self, snapshot: dict[str, Any] | None) -> ObsType:
+        """Restore a snapshot from :meth:`snapshot_state`.
+
+        Mirrors :meth:`reset` (fresh exec namespace + step count) but sends the
+        simulator back to the snapshotted state instead of sampling a new
+        episode, so the same episode is replayed from its initial conditions.
+        """
+        self._step_count = 0
+        self.low_level_env.restore_state(snapshot)
+        obs = self._get_observation()
+        # Reinitialize globals so retried code does not see stale variables.
+        self._init_exec_globals()
+        self._exec_globals["INPUTS"] = obs
+        return obs
+
     def step(self, action: str) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
         """
         Default implementation: execute code with helpers, report reward and logs.

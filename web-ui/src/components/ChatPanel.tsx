@@ -8,6 +8,7 @@ interface ChatPanelProps {
   state: SessionState;
   onSendMessage: (text: string) => void;
   onResume: () => void;
+  onFinish: () => void;
   taskPrompt: string | null;
 }
 
@@ -16,6 +17,7 @@ export function ChatPanel({
   state,
   onSendMessage,
   onResume,
+  onFinish,
   taskPrompt,
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -128,6 +130,24 @@ export function ChatPanel({
 
       {/* Input area */}
       <div className="flex-shrink-0 border-t border-surface-border bg-surface-raised px-4 py-4">
+        {/* Human-control action — only while paused for input. In the simplified
+            interactive flow every feedback already resets the scene and starts a
+            fresh attempt (so there is no separate Reset); Finish is the sole
+            success signal that ends the trial (§4.1). */}
+        {canInput && (
+          <div className="flex items-center gap-2 mb-2">
+            <button
+              onClick={onFinish}
+              title="Mark the task as successfully completed and end the trial"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition-all"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+              </svg>
+              Finish (success)
+            </button>
+          </div>
+        )}
         <ChatInput
           onSend={onSendMessage}
           onSkip={onResume}

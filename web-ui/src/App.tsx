@@ -385,6 +385,7 @@ function App() {
             state={trial.state}
             onSendMessage={trial.injectPrompt}
             onResume={trial.resumeTrial}
+            onFinish={trial.requestFinish}
             taskPrompt={trial.taskPrompt}
           />
         </div>

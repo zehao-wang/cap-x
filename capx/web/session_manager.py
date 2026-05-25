@@ -20,6 +20,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Sentinel payloads put on ``user_injection_queue`` to signal human control
+# actions that are distinct from plain feedback text. The runner's human-pause
+# wait point recognises these and acts accordingly (see async_trial_runner).
+# Wrapped in NUL bytes so they can never collide with real typed feedback.
+RESET_COMMAND = "\x00__CAPX_RESET__\x00"
+FINISH_COMMAND = "\x00__CAPX_FINISH__\x00"
+
 
 async def run_blocking_with_interrupt(
     session: "Session",
@@ -275,6 +282,37 @@ class SessionManager:
             logger.info(f"Injected prompt into session {session_id}: {text[:50]}...")
             return True
 
+        return False
+
+    async def request_reset(self, session_id: str) -> bool:
+        """Ask a paused session to reset its environment.
+
+        Only honoured while the session is awaiting user input (the natural
+        decision point between turns). The runner keeps only this attempt's
+        most recent code as context and replans from the freshly reset state.
+        """
+        session = await self.get_session(session_id)
+        if not session:
+            return False
+        if session.state == SessionState.AWAITING_USER_INPUT:
+            await session.user_injection_queue.put(RESET_COMMAND)
+            logger.info(f"Reset requested for session {session_id}")
+            return True
+        return False
+
+    async def request_finish(self, session_id: str) -> bool:
+        """Mark a paused session as human-confirmed success and end it.
+
+        In interactive mode the model's own FINISH never ends the trial; the
+        success signal must come from the human via this call (§9 / §4.1).
+        """
+        session = await self.get_session(session_id)
+        if not session:
+            return False
+        if session.state == SessionState.AWAITING_USER_INPUT:
+            await session.user_injection_queue.put(FINISH_COMMAND)
+            logger.info(f"Finish (human success) requested for session {session_id}")
+            return True
         return False
 
     def list_sessions(self) -> list[dict[str, Any]]:

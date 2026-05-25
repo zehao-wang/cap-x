@@ -414,6 +414,16 @@ def create_app() -> FastAPI:
                         if session.state == SessionState.AWAITING_USER_INPUT:
                             await session.user_injection_queue.put("")
 
+                    elif msg_type == "reset":
+                        # Human asks to reset the env and replan (§9.1)
+                        logger.info(f"Reset command received for session {session_id}")
+                        await manager.request_reset(session_id)
+
+                    elif msg_type == "finish":
+                        # Human confirms success and ends the trial (§9 / §4.1)
+                        logger.info(f"Finish command received for session {session_id}")
+                        await manager.request_finish(session_id)
+
                     elif msg_type == "update_settings":
                         # Update session settings dynamically during a trial
                         if "await_user_input_each_turn" in message:

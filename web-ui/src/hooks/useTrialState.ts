@@ -30,6 +30,8 @@ interface UseTrialStateReturn extends TrialState {
   stopTrial: () => void;
   injectPrompt: (text: string) => void;
   resumeTrial: () => void;
+  requestReset: () => void;
+  requestFinish: () => void;
   reset: () => void;
   fullReset: () => void;
   checkActiveSession: () => Promise<ActiveSessionResponse | null>;
@@ -465,6 +467,26 @@ export function useTrialState(): UseTrialStateReturn {
     send({ type: 'resume' });
   }, [send]);
 
+  // Ask the running trial to reset its environment and replan (§9.1).
+  const requestReset = useCallback(() => {
+    addMessage({
+      type: 'system',
+      timestamp: new Date().toISOString(),
+      content: 'Reset requested — replanning from a clean environment.',
+    });
+    send({ type: 'reset' });
+  }, [send, addMessage]);
+
+  // Confirm success and end the trial — the human success signal (§9 / §4.1).
+  const requestFinish = useCallback(() => {
+    addMessage({
+      type: 'system',
+      timestamp: new Date().toISOString(),
+      content: 'Marked as success by the user.',
+    });
+    send({ type: 'finish' });
+  }, [send, addMessage]);
+
   const updateSettings = useCallback(
     (settings: { await_user_input_each_turn?: boolean }) => {
       send({ type: 'update_settings', ...settings });
@@ -538,6 +560,8 @@ export function useTrialState(): UseTrialStateReturn {
     stopTrial,
     injectPrompt,
     resumeTrial,
+    requestReset,
+    requestFinish,
     updateSettings,
     reset,
     fullReset,

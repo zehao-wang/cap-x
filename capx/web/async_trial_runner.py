@@ -50,11 +50,52 @@ from capx.web.models import (
     WSEventBase,
 )
 from capx.utils import execution_logger
-from capx.web.session_manager import Session, run_blocking_with_interrupt
+from capx.web.session_manager import (
+    FINISH_COMMAND,
+    RESET_COMMAND,
+    Session,
+    run_blocking_with_interrupt,
+)
 
 logger = logging.getLogger(__name__)
 
 MULTITURN_LIMIT = 30
+
+
+def _encode_frame_png(frame) -> tuple[Any, str]:
+    """Encode an RGB frame to a (PIL image, ``data:image/png;base64,...`` URL)."""
+    from PIL import Image
+    import io as _io
+    import base64 as _b64
+
+    pil_img = Image.fromarray(frame)
+    buf = _io.BytesIO()
+    pil_img.save(buf, format="png")
+    data_url = f"data:image/png;base64,{_b64.b64encode(buf.getvalue()).decode('utf-8')}"
+    return pil_img, data_url
+
+
+def _merge_consecutive_messages(messages: list[dict]) -> list[dict]:
+    """Merge adjacent messages with the same role into one.
+
+    Some chat-template servers require strictly alternating roles. Appending
+    human feedback / a reset note as its own user turn (§9.1/§9.2) can produce
+    consecutive ``user`` messages; this collapses them just before sending,
+    concatenating their content parts. Content is normalized to the list-of-
+    parts form so text and image parts merge cleanly. Input is not mutated.
+    """
+    def _as_parts(content: Any) -> list[dict]:
+        if isinstance(content, list):
+            return list(content)
+        return [{"type": "text", "text": content if content is not None else ""}]
+
+    merged: list[dict] = []
+    for msg in messages:
+        if merged and merged[-1]["role"] == msg.get("role"):
+            merged[-1]["content"] = _as_parts(merged[-1]["content"]) + _as_parts(msg.get("content"))
+        else:
+            merged.append({**msg, "content": msg.get("content")})
+    return merged
 
 
 @dataclass
@@ -185,6 +226,13 @@ async def run_trial_async(
             return obs, info, frame
 
         obs, _, initial_frame = await run_in_env_thread(_reset_and_render)
+        # Snapshot the episode-start state so a human-requested reset can send
+        # the simulator back here without sampling a new episode (§9.1).
+        episode_snapshot = (
+            await run_in_env_thread(env.snapshot_state)
+            if low_level_env is not None and hasattr(env, "snapshot_state")
+            else None
+        )
         # Per-trial artifact dir for SAM3/Molmo intermediate dumps. The reduced
         # APIs are constructed against env.low_level_env, so set both to be
         # robust to either being read by resolve_dump_dir.
@@ -257,24 +305,22 @@ async def run_trial_async(
             (use_visual_feedback and args.model in VLM_MODELS)
             or (use_img_differencing and visual_differencing_args.model in VLM_MODELS)
         ) and initial_frame is not None:
-            from PIL import Image
-            initial_visual_feedback_img = Image.fromarray(initial_frame)
+            initial_visual_feedback_img, initial_visual_feedback_base64 = _encode_frame_png(initial_frame)
             visual_feedback_imgs.append(initial_visual_feedback_img)
-            import io as _io, base64 as _b64
-            buf = _io.BytesIO()
-            initial_visual_feedback_img.save(buf, format="png")
-            initial_visual_feedback_base64 = f"data:image/png;base64,{_b64.b64encode(buf.getvalue()).decode('utf-8')}"
-            if initial_visual_feedback_img:
-                visual_feedback_imgs.append(initial_visual_feedback_img)
-            if initial_visual_feedback_base64:
-                visual_feedback_base64_history.append(initial_visual_feedback_base64)
+            visual_feedback_base64_history.append(initial_visual_feedback_base64)
 
-                # Emit initial visual feedback
-                await emit(VisualFeedbackEvent(
-                    session_id=session.session_id,
-                    image_base64=initial_visual_feedback_base64,
-                    description="Initial environment state",
-                ))
+            # Emit initial visual feedback
+            await emit(VisualFeedbackEvent(
+                session_id=session.session_id,
+                image_base64=initial_visual_feedback_base64,
+                description="Initial environment state",
+            ))
+
+        # Snapshot the clean, text-only task prompt before any visual feedback /
+        # image-differencing text is appended. On a human-requested reset we
+        # rebuild the conversation from this clean base + only the most recent
+        # code as context (§9.1), rather than carrying the full history.
+        clean_base_prompt = copy.deepcopy(obs["full_prompt"])
 
         # Add visual feedback to prompt if enabled
         if use_visual_feedback and initial_visual_feedback_base64:
@@ -347,78 +393,127 @@ async def run_trial_async(
         if is_cancelled():
             raise asyncio.CancelledError("Cancelled before initial code generation")
 
+        # ====================================================================
+        # Streaming helper — drives one model query end-to-end, emitting the
+        # streaming delta events and returning (content, reasoning). Shared by
+        # initial generation, the multi-turn decision, and reset re-planning so
+        # the streaming plumbing lives in exactly one place.
+        # ====================================================================
+        async def _stream_query(prompt, phase, turn_no):
+            # Collapse any consecutive same-role messages (feedback / reset turns
+            # can create adjacent user messages) so role-alternating servers
+            # don't choke. See _merge_consecutive_messages.
+            prompt = _merge_consecutive_messages(prompt)
+            await emit(ModelStreamingStartEvent(
+                session_id=session.session_id,
+                phase=phase,
+                turn_number=turn_no,
+                model_name=args.model,
+            ))
+            q: asyncio.Queue = asyncio.Queue()
+            cap_loop = asyncio.get_running_loop()
+
+            def _pump():
+                try:
+                    for chunk in _query_model_streaming(args, prompt):
+                        asyncio.run_coroutine_threadsafe(q.put(chunk), cap_loop)
+                except Exception as e:  # surface as a queued error chunk
+                    asyncio.run_coroutine_threadsafe(
+                        q.put({"type": "error", "error": str(e)}), cap_loop
+                    )
+
+            pump_task = cap_loop.run_in_executor(None, _pump)
+            content = ""
+            reasoning_out = None
+            while True:
+                if is_cancelled():
+                    raise asyncio.CancelledError("Cancelled during model streaming")
+                try:
+                    chunk = await asyncio.wait_for(q.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    if pump_task.done():
+                        break
+                    continue
+                if chunk["type"] == "content_delta":
+                    await emit(ModelStreamingDeltaEvent(
+                        session_id=session.session_id, content_delta=chunk["content"],
+                    ))
+                elif chunk["type"] == "reasoning_delta":
+                    await emit(ModelStreamingDeltaEvent(
+                        session_id=session.session_id, reasoning_delta=chunk["content"],
+                    ))
+                elif chunk["type"] == "done":
+                    content = chunk["content"]
+                    reasoning_out = chunk.get("reasoning")
+                    break
+                elif chunk["type"] == "error":
+                    raise RuntimeError(f"Streaming error: {chunk['error']}")
+            await pump_task
+            return content, reasoning_out
+
+        # ====================================================================
+        # Human-pause helper — between turns we surface the state and block for
+        # a human action. Returns one of:
+        #   ("finish",   "")    human confirms success -> end trial (§4.1)
+        #   ("reset",    "")    legacy reset command (button removed; harmless)
+        #   ("feedback", text)  free-text feedback -> reset scene & re-attempt
+        #   ("continue", "")    empty send -> no-op (keep waiting)
+        # Waits indefinitely: interactive sessions have NO turn timeout / auto-
+        # restart — the human drives every step. The Stop button cancels the
+        # task, which interrupts this await.
+        # ====================================================================
+        async def _wait_for_human(reward_val):
+            # Drain leftovers from a previous resume so we don't auto-continue.
+            while not session.user_injection_queue.empty():
+                try:
+                    session.user_injection_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            session.state = SessionState.AWAITING_USER_INPUT
+            await emit(StateUpdateEvent(
+                session_id=session.session_id,
+                state=SessionState.AWAITING_USER_INPUT,
+            ))
+            await emit(UserPromptRequestEvent(
+                session_id=session.session_id,
+                current_state_summary=(
+                    f"Executed {code_block_idx} of {len(code_blocks)} code blocks. "
+                    f"Reward: {reward_val:.3f}"
+                ),
+                executed_code_blocks=code_block_idx,
+            ))
+            payload = await session.user_injection_queue.get()
+            session.state = SessionState.RUNNING
+            await emit(StateUpdateEvent(
+                session_id=session.session_id, state=SessionState.RUNNING,
+            ))
+            if payload == RESET_COMMAND:
+                return "reset", ""
+            if payload == FINISH_COMMAND:
+                return "finish", ""
+            if payload:
+                return "feedback", payload
+            return "continue", ""
+
+        # Human feedback targets only the most recent code and is not retained
+        # long-term (§9.2): each turn's decision prompt is rebuilt from the clean
+        # task base plus the (unchanged) multi-turn template, with the current
+        # turn's feedback appended as its own user turn — no accumulation, no
+        # extra multi-step scaffolding.
+        # Most recent executed code — the only context retained across a reset.
+        last_executed_code = ""
+        # Set when the human confirms success; the sole success signal in
+        # interactive mode (§4.1).
+        human_finished = False
+
         # ========================================================================
         # Initial code generation (with streaming)
         # ========================================================================
         turn_number = 1  # Track multi-turn iterations (starts at 1)
-        await emit(ModelStreamingStartEvent(
-            session_id=session.session_id,
-            phase=ThinkingPhase.INITIAL,
-            turn_number=turn_number,
-            model_name=args.model,
-        ))
-
         logger.info("Querying model for initial code generation (streaming)")
-
-        # Use queue for true streaming from thread to async
-        chunk_queue: asyncio.Queue = asyncio.Queue()
-
-        # Capture event loop BEFORE starting thread (critical!)
-        main_loop = asyncio.get_running_loop()
-
-        def stream_to_queue():
-            """Run streaming query and put chunks in queue."""
-            try:
-                for chunk in _query_model_streaming(args, obs["full_prompt"]):
-                    # Use the captured loop reference, not get_event_loop()
-                    asyncio.run_coroutine_threadsafe(
-                        chunk_queue.put(chunk),
-                        main_loop
-                    )
-            except Exception as e:
-                asyncio.run_coroutine_threadsafe(
-                    chunk_queue.put({"type": "error", "error": str(e)}),
-                    main_loop
-                )
-
-        # Start streaming in background thread
-        stream_task = main_loop.run_in_executor(None, stream_to_queue)
-
-        raw_code = ""
-        reasoning = None
-
-        # Process chunks as they arrive
-        while True:
-            if is_cancelled():
-                raise asyncio.CancelledError("Cancelled during initial code generation")
-
-            try:
-                chunk = await asyncio.wait_for(chunk_queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                # Check if thread is still running
-                if stream_task.done():
-                    break
-                continue
-
-            if chunk["type"] == "content_delta":
-                await emit(ModelStreamingDeltaEvent(
-                    session_id=session.session_id,
-                    content_delta=chunk["content"],
-                ))
-            elif chunk["type"] == "reasoning_delta":
-                await emit(ModelStreamingDeltaEvent(
-                    session_id=session.session_id,
-                    reasoning_delta=chunk["content"],
-                ))
-            elif chunk["type"] == "done":
-                raw_code = chunk["content"]
-                reasoning = chunk.get("reasoning")
-                break
-            elif chunk["type"] == "error":
-                raise RuntimeError(f"Streaming error: {chunk['error']}")
-
-        # Wait for thread to complete
-        await stream_task
+        raw_code, reasoning = await _stream_query(
+            obs["full_prompt"], ThinkingPhase.INITIAL, turn_number
+        )
 
         if not raw_code:
             raise ValueError("Model returned empty response during streaming")
@@ -447,11 +542,16 @@ async def run_trial_async(
         # ========================================================================
         # Code execution loop
         # ========================================================================
-        while code_block_idx < len(code_blocks) and code_block_idx <= MULTITURN_LIMIT:
+        # In interactive mode the human decides when to stop, so the MULTITURN
+        # turn cap does not apply; headless/non-interactive runs keep it.
+        while code_block_idx < len(code_blocks) and (
+            session.await_user_input_each_turn or code_block_idx <= MULTITURN_LIMIT
+        ):
             if is_cancelled():
                 raise asyncio.CancelledError("Cancelled during code execution")
 
             code = code_blocks[code_block_idx]
+            last_executed_code = code
             session.current_block_index = code_block_idx
 
             # Check for cancellation before executing (safety check)
@@ -599,21 +699,14 @@ async def run_trial_async(
                     (use_visual_feedback and args.model in VLM_MODELS)
                     or (use_img_differencing and visual_differencing_args.model in VLM_MODELS)
                 ) and post_step_frame is not None:
-                    from PIL import Image as _Image
-                    import io as _io, base64 as _b64
-                    visual_feedback_img = _Image.fromarray(post_step_frame)
-                    buf = _io.BytesIO()
-                    visual_feedback_img.save(buf, format="png")
-                    visual_feedback_base64 = f"data:image/png;base64,{_b64.b64encode(buf.getvalue()).decode('utf-8')}"
-                    if visual_feedback_img:
-                        visual_feedback_imgs.append(visual_feedback_img)
-                    if visual_feedback_base64:
-                        visual_feedback_base64_history.append(visual_feedback_base64)
+                    visual_feedback_img, visual_feedback_base64 = _encode_frame_png(post_step_frame)
+                    visual_feedback_imgs.append(visual_feedback_img)
+                    visual_feedback_base64_history.append(visual_feedback_base64)
 
-                        await emit(VisualFeedbackEvent(
-                            session_id=session.session_id,
-                            image_base64=visual_feedback_base64,
-                        ))
+                    await emit(VisualFeedbackEvent(
+                        session_id=session.session_id,
+                        image_base64=visual_feedback_base64,
+                    ))
 
                 # Image differencing
                 visual_differencing_feedback = None
@@ -649,132 +742,153 @@ async def run_trial_async(
                             model_used=visual_differencing_args.model,
                         ))
 
-                # Check for user injection - only pause if explicitly requested
-                # Read from session to allow dynamic toggling during trial
-                if session.await_user_input_each_turn:
-                    # Drain any leftover items from previous resumes to prevent auto-continue
-                    while not session.user_injection_queue.empty():
-                        try:
-                            session.user_injection_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-
-                    session.state = SessionState.AWAITING_USER_INPUT
-                    await emit(StateUpdateEvent(
-                        session_id=session.session_id,
-                        state=SessionState.AWAITING_USER_INPUT,
-                    ))
-                    await emit(UserPromptRequestEvent(
-                        session_id=session.session_id,
-                        current_state_summary=f"Executed {code_block_idx} of {len(code_blocks)} code blocks. Reward: {reward:.3f}",
-                        executed_code_blocks=code_block_idx,
-                    ))
-
-                    # Wait for user input with timeout
-                    try:
-                        user_text = await asyncio.wait_for(
-                            session.user_injection_queue.get(),
-                            timeout=300.0,  # 5 minute timeout
-                        )
-                        # Append user text to multi-turn prompt if not empty
-                        if user_text:
-                            complete_multi_turn_prompt += f"\n\nUser feedback: {user_text}"
-                            logger.info(f"User injected: {user_text[:100]}...")
-                    except asyncio.TimeoutError:
-                        logger.info("User input timeout, continuing without injection")
-
-                    session.state = SessionState.RUNNING
-                    await emit(StateUpdateEvent(
-                        session_id=session.session_id,
-                        state=SessionState.RUNNING,
-                    ))
-
-                if is_cancelled():
-                    raise asyncio.CancelledError("Cancelled during multi-turn")
-
                 # Zero out visual feedback if not using it
                 if not use_visual_feedback:
                     visual_feedback_base64 = None
 
-                # Build and query for decision (with streaming)
-                turn_number += 1
-                await emit(ModelStreamingStartEvent(
-                    session_id=session.session_id,
-                    phase=ThinkingPhase.MULTI_TURN,
-                    turn_number=turn_number,
-                    model_name=args.model,
-                ))
+                # ----------------------------------------------------------------
+                # Turn handling — diverges by mode.
+                #
+                # Interactive (§9, simplified): reached only *after* a code block
+                # executed, so the human always reviews a fresh result. They either
+                # Finish (the sole success signal, §4.1) or send — and *any* send
+                # resets the scene to the episode start and regenerates a full fresh
+                # attempt from [task + previous code + feedback]. There is no
+                # incremental multi-turn and no separate Reset action; resetting
+                # every attempt also keeps the viser playback timeline clean (one
+                # episode per attempt).
+                #
+                # Headless/benchmark: unchanged — the model drives REGENERATE /
+                # FINISH itself with no human in the loop.
+                # ----------------------------------------------------------------
+                headless_finish = False
 
-                multi_turn_decision_prompt = _build_multi_turn_decision_prompt(
-                    obs, complete_multi_turn_prompt, visual_feedback_base64, visual_differencing_feedback
-                )
+                if session.await_user_input_each_turn:
+                    has_snapshot = episode_snapshot is not None and hasattr(env, "restore_state")
 
-                # Stream multi-turn decision
-                mt_chunk_queue: asyncio.Queue = asyncio.Queue()
+                    def _restore_and_render():
+                        # Exact restore to the episode start, or a fresh reset if
+                        # no snapshot was captured (non-sim env) — task restarts.
+                        if has_snapshot:
+                            o = env.restore_state(episode_snapshot)
+                        else:
+                            o, _i = env.reset()
+                        f = env.render() if hasattr(env, "render") else None
+                        return o, f
 
-                # Capture event loop BEFORE starting thread (critical!)
-                mt_main_loop = asyncio.get_running_loop()
-
-                def stream_multiturn_to_queue():
-                    try:
-                        for chunk in _query_model_streaming(args, multi_turn_decision_prompt):
-                            asyncio.run_coroutine_threadsafe(
-                                mt_chunk_queue.put(chunk),
-                                mt_main_loop
-                            )
-                    except Exception as e:
-                        asyncio.run_coroutine_threadsafe(
-                            mt_chunk_queue.put({"type": "error", "error": str(e)}),
-                            mt_main_loop
-                        )
-
-                mt_stream_task = mt_main_loop.run_in_executor(None, stream_multiturn_to_queue)
-
-                mt_content = ""
-                mt_reasoning = None
-
-                while True:
-                    if is_cancelled():
-                        raise asyncio.CancelledError("Cancelled during multi-turn decision")
-
-                    try:
-                        chunk = await asyncio.wait_for(mt_chunk_queue.get(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        if mt_stream_task.done():
+                    # Pause for the human. Finish ends the trial; only actual
+                    # feedback resets the scene and re-attempts. An empty send
+                    # is a no-op (keep waiting) — there is no turn timeout / auto
+                    # restart; we only ever modify this one trial via feedback.
+                    new_blocks: list[str] = []
+                    while True:
+                        action, fb_text = await _wait_for_human(reward)
+                        if action == "finish":
+                            human_finished = True
                             break
-                        continue
+                        if action != "feedback":
+                            # Empty send / legacy reset with no text: nothing to
+                            # modify — re-pause and keep waiting.
+                            continue
+                        feedback_text = fb_text
 
-                    if chunk["type"] == "content_delta":
-                        await emit(ModelStreamingDeltaEvent(
+                        if not has_snapshot:
+                            logger.warning("No episode snapshot; falling back to env.reset()")
+                            await emit(ErrorEvent(
+                                session_id=session.session_id,
+                                message=(
+                                    "No episode snapshot was available — restarting from a "
+                                    "fresh reset instead of the exact episode start."
+                                ),
+                                recoverable=True,
+                            ))
+                        obs, reset_frame = await run_in_env_thread(_restore_and_render)
+
+                        # Regeneration context: task + previous attempt's code +
+                        # the human's feedback (the only added context).
+                        gen_prompt = copy.deepcopy(clean_base_prompt)
+                        reset_note = (
+                            "The simulator has been reset to the start of this episode; "
+                            "none of the earlier steps persist. Your previous attempt's "
+                            "code was:\n```python\n"
+                            f"{last_executed_code}\n```"
+                        )
+                        gen_prompt.append({
+                            "role": "user",
+                            "content": [{"type": "text", "text": reset_note}],
+                        })
+                        if use_visual_feedback and reset_frame is not None:
+                            _img, _b64url = _encode_frame_png(reset_frame)
+                            gen_prompt[-1]["content"].append(
+                                {"type": "image_url", "image_url": {"url": _b64url}}
+                            )
+                            await emit(VisualFeedbackEvent(
+                                session_id=session.session_id,
+                                image_base64=_b64url,
+                                description="Environment reset",
+                            ))
+                        if feedback_text:
+                            logger.info(f"Human feedback: {feedback_text[:100]}...")
+                            gen_prompt.append({
+                                "role": "user",
+                                "content": [{"type": "text", "text": feedback_text}],
+                            })
+
+                        turn_number += 1
+                        raw_code, reasoning = await _stream_query(
+                            gen_prompt, ThinkingPhase.INITIAL, turn_number
+                        )
+                        new_blocks = _extract_code(raw_code) if raw_code else []
+                        await emit(ModelStreamingEndEvent(
                             session_id=session.session_id,
-                            content_delta=chunk["content"],
+                            content=raw_code,
+                            reasoning=reasoning,
+                            code_blocks=new_blocks,
+                            decision=DecisionType.INITIAL,
                         ))
-                    elif chunk["type"] == "reasoning_delta":
-                        await emit(ModelStreamingDeltaEvent(
+                        all_responses.append({
+                            "block_idx": [0],
+                            "code_blocks": new_blocks,
+                            "decision": "feedback_retry",
+                            "reasoning": reasoning if reasoning else "",
+                        })
+                        if new_blocks:
+                            break  # got code -> execute the fresh attempt
+                        await emit(ErrorEvent(
                             session_id=session.session_id,
-                            reasoning_delta=chunk["content"],
+                            message="The model produced no code. Add feedback and try again.",
+                            recoverable=True,
                         ))
-                    elif chunk["type"] == "done":
-                        mt_content = chunk["content"]
-                        mt_reasoning = chunk.get("reasoning")
-                        break
-                    elif chunk["type"] == "error":
-                        raise RuntimeError(f"Streaming error: {chunk['error']}")
 
-                await mt_stream_task
+                    if human_finished:
+                        break  # exit execution loop
 
+                    code_blocks = list(new_blocks)
+                    code_block_metadata = [{"generation": 0, "regenerated": False}] * len(new_blocks)
+                    code_block_idx = 0
+                    session.total_code_blocks = len(code_blocks)
+                    continue  # restart execution loop with the fresh attempt
+
+                # Headless/benchmark: model decides REGENERATE / FINISH (unchanged).
+                turn_number += 1
+                multi_turn_decision_prompt = _build_multi_turn_decision_prompt(
+                    {"full_prompt": clean_base_prompt},
+                    complete_multi_turn_prompt,
+                    visual_feedback_base64,
+                    visual_differencing_feedback,
+                )
+                mt_content, mt_reasoning = await _stream_query(
+                    multi_turn_decision_prompt, ThinkingPhase.MULTI_TURN, turn_number
+                )
                 if not mt_content:
-                    logger.warning("Model returned empty response for multi-turn decision, defaulting to finish")
-                    decision, new_code = "finish", None
                     reasoning = None
+                    decision, new_code = "finish", None
                 else:
                     reasoning = mt_reasoning
                     decision, new_code = _parse_multi_turn_decision(mt_content)
 
                 if decision == "regenerate":
-                    logger.info("Model chose to regenerate code")
                     new_blocks = _extract_code(new_code)
-
                     await emit(ModelStreamingEndEvent(
                         session_id=session.session_id,
                         content=mt_content,
@@ -782,7 +896,6 @@ async def run_trial_async(
                         code_blocks=new_blocks,
                         decision=DecisionType.REGENERATE,
                     ))
-
                     all_responses.append({
                         "multi_turn_prompt": multi_turn_decision_prompt,
                         "block_idx": [code_block_idx],
@@ -790,22 +903,16 @@ async def run_trial_async(
                         "decision": "regenerate",
                         "reasoning": reasoning if reasoning else "",
                     })
-
-                    # Replace remaining blocks
                     del code_blocks[code_block_idx:]
                     del code_block_metadata[code_block_idx:]
                     code_blocks.extend(new_blocks)
                     code_block_metadata.extend([
                         {"generation": num_regenerations + 1, "regenerated": True, "regenerated_at_idx": code_block_idx}
                     ] * len(new_blocks))
-
                     num_regenerations += 1
                     session.num_regenerations = num_regenerations
                     session.total_code_blocks = len(code_blocks)
-
-                elif decision == "finish":
-                    logger.info("Model chose to finish")
-
+                else:  # finish
                     await emit(ModelStreamingEndEvent(
                         session_id=session.session_id,
                         content=mt_content,
@@ -813,14 +920,15 @@ async def run_trial_async(
                         code_blocks=[],
                         decision=DecisionType.FINISH,
                     ))
-
                     all_responses.append({
                         "multi_turn_prompt": multi_turn_decision_prompt,
                         "decision": "finish",
                         "reasoning": reasoning if reasoning else new_code if new_code else "",
                     })
-
                     num_finishes += 1
+                    headless_finish = True
+
+                if headless_finish:
                     break
 
             logger.info(f"Code block {code_block_idx} done, {len(code_blocks)} total blocks")
@@ -909,10 +1017,16 @@ async def run_trial_async(
         else:
             logger.info("No output_dir configured, skipping artifact save")
 
-        # Success if the environment reports task completion or termination with positive reward,
-        # OR if the model explicitly chose to finish in multi-turn mode.
+        # task_completed reflects the environment's own reward signal (shown for
+        # reference). The success signal differs by mode:
+        #   - interactive: only the human can declare success (§4.1), via the
+        #     Finish action (human_finished). The model's FINISH never counts.
+        #   - headless/non-interactive: fall back to the env / model finish.
         task_completed = bool(info_step.get("task_completed", False)) or (terminated and reward > 0)
-        success = task_completed or num_finishes > 0
+        if session.await_user_input_each_turn:
+            success = human_finished
+        else:
+            success = task_completed or num_finishes > 0
 
         # Emit completion
         session.state = SessionState.COMPLETE
