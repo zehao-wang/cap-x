@@ -2,8 +2,10 @@
 
 > **共享契约** — 被所有功能文档引用。**术语必须全文一致**（见每条末尾的命名约定）。
 
-1. **skill**（openclaw 语境）：一些可更新的、关注**特定 task 之间协作**的工作流。
-   注意它**不是** skill library 里的内容，两者是不同概念。
+1. **skill**（openclaw 语境）：一段可更新的工作流，关注**多个 task 之间如何协作**。
+   ⚠️ 与 **`skill_library`**（条目 3、[storage.md](storage.md)）是**两个不同概念**，勿混淆：
+   本条 "skill" 是 openclaw 式高层工作流（如未来处理 rgbd demo 的 skill，见条目 7）；
+   `skill_library` 是长期记忆里由 primitives 组成的通用函数库。
 
 2. **system prompt**：每次 LLM 调用都固定出现的内容，规定必须考虑的事情和固定流程。
 

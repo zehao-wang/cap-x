@@ -50,14 +50,20 @@ self-evolve 系统在 agent0 之上**新增 / 部分重新设计**，使其能�
                 │ final_code
                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ mem/history_pool/   短期记忆，仅成功 history，暂不删除（openclaw 式追加）│   storage.md
+│ [Experience Distill]  postprocessor 定稿后 / 入 pool 前                │   03-feedback-postprocessor.md 🔲
+│   debugger 式问题驱动 → 把整段 trial 蒸成小而可溯源的 digest（限长）     │
+└───────────────┬─────────────────────────────────────────────────────┘
+                │ final_code + digest 一起入 pool
+                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ mem/history_pool/  <id>.json(全文,drill-down) + <id>.digest.md(默认读) │   storage.md
 └───────────────┬─────────────────────────────────────────────────────┘
                 │ 触发：未处理 history 数 ≥ trigger_history_count（默认 5）
                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ [Update Planner]  (Library Management 的一部分)                        │   04-update-planner.md 🔲
-│   LLM-1: 读未处理 history+task → 提议新增/更新代码                      │
-│   LLM-2: 审核(去重 / bug / general / 粒度 ≤ atomic task)  ──revise──┐  │
+│   LLM-1: 默认读 digest / 按需 drill 原文(Agent Debugger 式)→ 提议代码   │
+│   LLM-2: 同式回查审核(去重 / bug / general / 粒度 ≤ atomic) ──revise─┐ │
 │          revise 上限 = max_revise_iterations；超限则强制定稿         │  │
 │          └──pass──► 由 LLM-2 写入 func_candidate_pool ◄──────────────┘  │
 │   完成后：标记这批 history 为已处理（history 本身保留）                  │
@@ -100,8 +106,8 @@ self-evolve 系统在 agent0 之上**新增 / 部分重新设计**，使其能�
 | --- | --- | --- |
 | [01-interactive-loop.md](01-interactive-loop.md) | ✅ | human → 成功 trial（喂给 Feedback Postprocessor） |
 | [02-visualization.md](02-visualization.md) | ✅ | 观测帧 → viser 回放 + `outputs/.../attempt_NN.npz`（纯 UI，不影响 pipeline 数据） |
-| [03-feedback-postprocessor.md](03-feedback-postprocessor.md) | 🔲 | 成功 trial → `history_pool`（通用化后的 `final_code`） |
-| [04-update-planner.md](04-update-planner.md) | 🔲 | `history_pool` → `func_candidate_pool` |
+| [03-feedback-postprocessor.md](03-feedback-postprocessor.md) | 🔲 | 成功 trial → `history_pool`（通用化 `final_code` + 入 pool 前 distill 出 `.digest.md`） |
+| [04-update-planner.md](04-update-planner.md) | 🔲 | `history_pool`（默认读 digest / 按需 drill 原文）→ `func_candidate_pool` |
 | [05-benchmark-evaluator.md](05-benchmark-evaluator.md) | 🔲 | `func_candidate_pool` →（批准后）长期 library |
 | [06-heartbeat-cron.md](06-heartbeat-cron.md) | 🔲 | 调度：唤起 daily task + 定时触发 Evaluator |
 

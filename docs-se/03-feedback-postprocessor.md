@@ -2,9 +2,10 @@
 
 > **状态**: 🔲 待实现
 > **读 → 写**: 一次**人确认成功**的 trial（来自 [01-interactive-loop.md](01-interactive-loop.md)）
-> → `mem/history_pool/<task>__<ts>.json` 的 `final_code`（通用化后的版本）
-> **依赖契约**: [storage.md](storage.md)（success log schema）、[concepts.md](concepts.md)
-> （atomic task / 超参化）
+> → `mem/history_pool/<task>__<ts>.json`（通用化后的 `final_code` + 全文）
+> **和** 同名 `<task>__<ts>.digest.md`（distill 出的 sourced digest）
+> **依赖契约**: [storage.md](storage.md)（success log schema + digest schema）、
+> [concepts.md](concepts.md)（atomic task / 超参化）
 
 由于 human feedback 常带额外信息，我们在尝试时应**先尽量用这些信息让任务成功**。成功之后，
 Feedback Postprocessor 负责把代码改得更通用：
@@ -19,3 +20,22 @@ Feedback Postprocessor 负责把代码改得更通用：
   feedback）。对 → 结束；错 → 继续重写。
 - **输出**：通用化后的 `final_code` 连同完整对话（含 human feedback）按 success log schema
   追加到 `history_pool`（schema 见 [storage.md](storage.md)）。
+
+## Experience Distill（定稿后、入 pool 前）
+
+> 独立于上面的 rewrite：rewrite 只负责把**代码**通用化；distill 负责把**这整段经验**蒸成一份
+> 小而可溯源的 digest。两步串行——rewrite 定稿 `final_code` 之后、把 trial 写进 `history_pool`
+> **之前**，跑一次 distill，让 `.json`（全文）和 `.digest.md`（digest）一起入 pool。
+
+**为什么放这里**：这是借鉴 Agent Debugger 的 **Experience observability**——下游 Update Planner
+若把每条 history 的 `chat_history` 全文灌进 context 会爆窗口；正解是**先蒸成小 digest，消费者
+默认读 digest、需要时再 drill 回全文**。把 distill 放在入 pool 前，大 context 的代价**只在写入
+时一次性付掉**，之后所有消费者都在小 digest 上工作。
+
+- **做法**：问题驱动的 debugger 式分析（不是泛泛"总结一下"），针对成功 trial 问固定问题：
+  KEY STRATEGY / REUSABLE PATTERN（可抽成哪个库、什么粒度）/ KEY HYPER-PARAMS+来历 / FRAGILITY。
+  此刻整段 trial 仍在 Postprocessor 的 context 里，distill 近乎零额外读取成本。
+- **强制限长**：`experience_distill.max_words`（默认 200，见 [config.md](config.md)），逼出"小"。
+- **强制 sourcing**：每条论断带 `[#<message_index>]` 回溯到 `chat_history` 下标——digest 是有损
+  入口视图，全文才是真相，下游靠这些标注 drill-down 核实。
+- **输出**：`<task>__<ts>.digest.md`，schema 见 [storage.md](storage.md) 的 digest schema。
