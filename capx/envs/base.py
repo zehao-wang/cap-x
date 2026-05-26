@@ -1,8 +1,11 @@
+import logging
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Any, SupportsFloat, TypeVar, abstractmethod
 
 from gymnasium import Env
+
+logger = logging.getLogger(__name__)
 
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
@@ -165,6 +168,15 @@ class BaseEnv(Env):
                     snapshot[name] = _copy.deepcopy(getattr(self, name))
                 except Exception:
                     snapshot[name] = getattr(self, name)
+        kind, payload = mj_state
+        try:
+            import numpy as _np
+            _qsum = float(_np.sum(sim.data.qpos))
+        except Exception:
+            _qsum = None
+        logger.info(
+            "snapshot_state: captured mj_state kind=%s qpos_sum=%s", kind, _qsum,
+        )
         return snapshot
 
     def restore_state(self, snapshot: dict[str, Any] | None) -> None:
@@ -172,11 +184,27 @@ class BaseEnv(Env):
         import copy as _copy
 
         if not snapshot:
+            logger.warning("restore_state: empty snapshot -> NO reset performed")
             return
         sim = self._get_mj_sim()
         if sim is None:
+            logger.warning("restore_state: no MuJoCo sim found -> NO reset performed")
             return
+        try:
+            import numpy as _np
+            _before = float(_np.sum(sim.data.qpos))
+        except Exception:
+            _before = None
         self._apply_mj_state(sim, snapshot["mj_state"])
+        try:
+            import numpy as _np
+            _after = float(_np.sum(sim.data.qpos))
+        except Exception:
+            _after = None
+        logger.info(
+            "restore_state: applied mj_state qpos_sum %s -> %s (changed=%s)",
+            _before, _after, (_before is not None and _after is not None and abs(_before - _after) > 1e-6),
+        )
         for name, value in snapshot.items():
             if name == "mj_state":
                 continue

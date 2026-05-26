@@ -371,25 +371,12 @@ def create_app() -> FastAPI:
             return
 
         await websocket.accept()
-        session.websockets.append(websocket)
         logger.info(f"WebSocket connected for session {session_id}")
 
-        # Replay event history so reconnecting clients see all past messages
-        if session.event_history:
-            logger.info(f"Replaying {len(session.event_history)} events for session {session_id}")
-            for event_json in session.event_history:
-                try:
-                    await websocket.send_text(event_json)
-                except Exception:
-                    break
-
-        # Send current state
-        await websocket.send_text(
-            StateUpdateEvent(
-                session_id=session_id,
-                state=session.state,
-            ).model_dump_json()
-        )
+        # Replay history + current state and register the socket for broadcast,
+        # all under the session send lock so a running trial's emits can't
+        # interleave sends on this socket or duplicate/reorder the replay.
+        await session.attach_websocket(websocket)
 
         try:
             while True:

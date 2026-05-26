@@ -22,8 +22,14 @@ if curl -sf -m 3 "http://${HOST}:${PORT}/v1/models" >/dev/null 2>&1; then
     exit 0
 fi
 
-# Models live on scratch (downloaded by prefetch_agent0_models.sh).
-export HF_HOME="${HF_HOME:-/leonardo_scratch/fast/EUHPC_D33_222/zwang003/cache/huggingface}"
+# Models live under CAPX_CACHE_ROOT (downloaded by prefetch_agent0_models.sh).
+# When launched by a run script HF_HOME is already exported and inherited. An
+# explicit CAPX_CACHE_ROOT wins even over an HF_HOME from ~/.bashrc.
+if [[ -n "${CAPX_CACHE_ROOT:-}" ]]; then
+    export HF_HOME="$CAPX_CACHE_ROOT/cache/huggingface"
+else
+    export HF_HOME="${HF_HOME:-/leonardo_scratch/fast/EUHPC_D33_222/zwang003/cache/huggingface}"
+fi
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 

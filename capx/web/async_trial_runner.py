@@ -9,8 +9,6 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any
 
 from capx.envs.configs.instantiate import instantiate
 from capx.llm.client import (
@@ -50,70 +48,24 @@ from capx.web.models import (
     WSEventBase,
 )
 from capx.utils import execution_logger
+from capx.utils.trace_logger import NullTraceLogger, TraceLogger
 from capx.web.session_manager import (
     FINISH_COMMAND,
     RESET_COMMAND,
     Session,
     run_blocking_with_interrupt,
 )
+from capx.web.trial_support import (
+    LaunchArgsCompat,
+    build_initial_state_prompt,
+    build_state_diff_prompt,
+    encode_frame_png as _encode_frame_png,
+    merge_consecutive_messages as _merge_consecutive_messages,
+)
 
 logger = logging.getLogger(__name__)
 
 MULTITURN_LIMIT = 30
-
-
-def _encode_frame_png(frame) -> tuple[Any, str]:
-    """Encode an RGB frame to a (PIL image, ``data:image/png;base64,...`` URL)."""
-    from PIL import Image
-    import io as _io
-    import base64 as _b64
-
-    pil_img = Image.fromarray(frame)
-    buf = _io.BytesIO()
-    pil_img.save(buf, format="png")
-    data_url = f"data:image/png;base64,{_b64.b64encode(buf.getvalue()).decode('utf-8')}"
-    return pil_img, data_url
-
-
-def _merge_consecutive_messages(messages: list[dict]) -> list[dict]:
-    """Merge adjacent messages with the same role into one.
-
-    Some chat-template servers require strictly alternating roles. Appending
-    human feedback / a reset note as its own user turn (§9.1/§9.2) can produce
-    consecutive ``user`` messages; this collapses them just before sending,
-    concatenating their content parts. Content is normalized to the list-of-
-    parts form so text and image parts merge cleanly. Input is not mutated.
-    """
-    def _as_parts(content: Any) -> list[dict]:
-        if isinstance(content, list):
-            return list(content)
-        return [{"type": "text", "text": content if content is not None else ""}]
-
-    merged: list[dict] = []
-    for msg in messages:
-        if merged and merged[-1]["role"] == msg.get("role"):
-            merged[-1]["content"] = _as_parts(merged[-1]["content"]) + _as_parts(msg.get("content"))
-        else:
-            merged.append({**msg, "content": msg.get("content")})
-    return merged
-
-
-@dataclass
-class LaunchArgsCompat:
-    """Compatible args structure for _query_model."""
-
-    model: str
-    server_url: str
-    api_key: str | None
-    max_tokens: int
-    temperature: float
-    reasoning_effort: str
-    debug: bool
-
-    # Image differencing
-    visual_differencing_model: str | None
-    visual_differencing_model_server_url: str | None
-    visual_differencing_model_api_key: str | None
 
 
 async def run_trial_async(
@@ -132,6 +84,16 @@ async def run_trial_async(
     """
     trial_start_time = time.time()
     trial = 1  # Interactive mode runs one trial at a time
+
+    # Per-trial agent<->LLM / tool trace. Reassigned to a real TraceLogger once
+    # the output dir is known; the no-op default keeps the finally block safe if
+    # we fail before then.
+    trace: TraceLogger | NullTraceLogger = NullTraceLogger()
+
+    # Single-worker pool for ALL env ops (created below once the trial starts).
+    # Tracked here so the finally block can tear it down on every exit path and
+    # not leak a worker thread per trial.
+    env_executor = None
 
     # Helper to emit events
     async def emit(event: WSEventBase) -> None:
@@ -236,11 +198,17 @@ async def run_trial_async(
         # Per-trial artifact dir for SAM3/Molmo intermediate dumps. The reduced
         # APIs are constructed against env.low_level_env, so set both to be
         # robust to either being read by resolve_dump_dir.
+        # `trace` records every agent<->LLM exchange and tool-call step into this
+        # dir for debugging / behaviour tracing (llm_trace.jsonl, events.jsonl,
+        # trace.md); it is a no-op when no output dir is configured.
         if session.config.get("output_dir"):
             trial_dir_inflight = os.path.join(session.config["output_dir"], f"trial_{trial:02d}")
             env.trial_artifact_dir = trial_dir_inflight
             if hasattr(env, "low_level_env"):
                 env.low_level_env.trial_artifact_dir = trial_dir_inflight
+            trace = TraceLogger(trial_dir_inflight, model=args.model)
+        else:
+            trace = NullTraceLogger()
         obs["full_prompt"] = copy.deepcopy(obs["full_prompt"])
 
         # Patch LIBERO task language into prompt template
@@ -345,25 +313,21 @@ async def run_trial_async(
                 message="Building initial environment description...",
             ))
 
-            initial_env_description_prompt = [
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that describes the initial state of the environment with the goal of the task in mind. Do *NOT* write any code. Provide ONLY task-relevant information.",
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": task_description},
-                        {"type": "text", "text": "Describe the initial state of the environment with the goal of the task in mind. Do *NOT* write any code. Provide ONLY task-relevant information."},
-                        {"type": "image_url", "image_url": {"url": initial_visual_feedback_base64}},
-                    ],
-                },
-            ]
+            initial_env_description_prompt = build_initial_state_prompt(
+                task_description, initial_visual_feedback_base64,
+            )
 
             initial_env_description_out = await asyncio.to_thread(
                 _query_model, visual_differencing_args, initial_env_description_prompt
             )
             initial_env_description = initial_env_description_out["content"]
+            trace.log_llm(
+                phase="env_description",
+                turn=0,
+                input_messages=initial_env_description_prompt,
+                output_content=initial_env_description,
+                model=visual_differencing_args.model,
+            )
             initial_visual_differencing_feedback = f"The initial state of the environment is described as follows:\n{initial_env_description}"
             obs["full_prompt"][-1]["content"][0]["text"] += f"\n\n{initial_visual_differencing_feedback}"
 
@@ -404,6 +368,7 @@ async def run_trial_async(
             # can create adjacent user messages) so role-alternating servers
             # don't choke. See _merge_consecutive_messages.
             prompt = _merge_consecutive_messages(prompt)
+            _t0 = time.time()
             await emit(ModelStreamingStartEvent(
                 session_id=session.session_id,
                 phase=phase,
@@ -414,8 +379,15 @@ async def run_trial_async(
             cap_loop = asyncio.get_running_loop()
 
             def _pump():
+                gen = _query_model_streaming(args, prompt)
                 try:
-                    for chunk in _query_model_streaming(args, prompt):
+                    for chunk in gen:
+                        if is_cancelled():
+                            # Close the generator so its underlying streaming
+                            # HTTP connection is released now, instead of
+                            # leaking until the request timeout fires.
+                            gen.close()
+                            break
                         asyncio.run_coroutine_threadsafe(q.put(chunk), cap_loop)
                 except Exception as e:  # surface as a queued error chunk
                     asyncio.run_coroutine_threadsafe(
@@ -425,30 +397,47 @@ async def run_trial_async(
             pump_task = cap_loop.run_in_executor(None, _pump)
             content = ""
             reasoning_out = None
-            while True:
-                if is_cancelled():
-                    raise asyncio.CancelledError("Cancelled during model streaming")
-                try:
-                    chunk = await asyncio.wait_for(q.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    if pump_task.done():
+            try:
+                while True:
+                    if is_cancelled():
+                        raise asyncio.CancelledError("Cancelled during model streaming")
+                    try:
+                        chunk = await asyncio.wait_for(q.get(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        if pump_task.done():
+                            break
+                        continue
+                    if chunk["type"] == "content_delta":
+                        await emit(ModelStreamingDeltaEvent(
+                            session_id=session.session_id, content_delta=chunk["content"],
+                        ))
+                    elif chunk["type"] == "reasoning_delta":
+                        await emit(ModelStreamingDeltaEvent(
+                            session_id=session.session_id, reasoning_delta=chunk["content"],
+                        ))
+                    elif chunk["type"] == "done":
+                        content = chunk["content"]
+                        reasoning_out = chunk.get("reasoning")
                         break
-                    continue
-                if chunk["type"] == "content_delta":
-                    await emit(ModelStreamingDeltaEvent(
-                        session_id=session.session_id, content_delta=chunk["content"],
-                    ))
-                elif chunk["type"] == "reasoning_delta":
-                    await emit(ModelStreamingDeltaEvent(
-                        session_id=session.session_id, reasoning_delta=chunk["content"],
-                    ))
-                elif chunk["type"] == "done":
-                    content = chunk["content"]
-                    reasoning_out = chunk.get("reasoning")
-                    break
-                elif chunk["type"] == "error":
-                    raise RuntimeError(f"Streaming error: {chunk['error']}")
-            await pump_task
+                    elif chunk["type"] == "error":
+                        raise RuntimeError(f"Streaming error: {chunk['error']}")
+                await pump_task
+            finally:
+                # On cancel / error we stop waiting on the pump. The executor
+                # thread can't be force-killed, but the is_cancelled() check in
+                # _pump + gen.close() let it unwind on the next chunk and free
+                # the connection rather than leaking it.
+                if not pump_task.done():
+                    pump_task.cancel()
+            trace.log_llm(
+                phase=getattr(phase, "value", str(phase)),
+                turn=turn_no,
+                input_messages=prompt,
+                output_content=content,
+                output_reasoning=reasoning_out,
+                model=args.model,
+                duration_s=time.time() - _t0,
+            )
             return content, reasoning_out
 
         # ====================================================================
@@ -537,15 +526,161 @@ async def run_trial_async(
         })
 
         # ========================================================================
-        # Code execution loop
+        # Execution loop
         # ========================================================================
-        # In interactive mode the human decides when to stop, so the MULTITURN
-        # turn cap does not apply; headless/non-interactive runs keep it.
-        while code_block_idx < len(code_blocks) and (
-            session.await_user_input_each_turn or code_block_idx <= MULTITURN_LIMIT
-        ):
+        # The model runs its OWN self-driven multi-turn loop (REGENERATE/FINISH
+        # scaffold + optional visual feedback / differencing), exactly as in
+        # headless. In INTERACTIVE mode that loop is wrapped in a human cycle:
+        # once the model's loop ends — it FINISHed, the episode terminated, it
+        # errored/timed out, or it hit the turn cap — we pause and ask the human
+        # (§1, §3):
+        #   - Finish   -> the SOLE success signal; ends the trial.
+        #   - feedback -> reset the scene to the episode start and re-run the
+        #                 WHOLE model multi-turn from [task prompt (incl. API /
+        #                 tool docs) + previous attempt's full code + feedback].
+        #   - empty    -> no-op, keep waiting (no turn timeout / auto restart).
+        # Headless runs the loop once and stops on the model's FINISH / cap.
+        interactive = session.await_user_input_each_turn
+        force_end = False          # request the model multi-turn loop to end now
+        post_step_frame = None     # latest rendered frame (for the human to judge)
+        while True:
             if is_cancelled():
                 raise asyncio.CancelledError("Cancelled during code execution")
+
+            # ----------------------------------------------------------------
+            # Has the model's multi-turn loop ended this pass?
+            # ----------------------------------------------------------------
+            if force_end or code_block_idx >= len(code_blocks) or code_block_idx > MULTITURN_LIMIT:
+                if not interactive:
+                    break  # headless: the trial ends here
+
+                # Surface the latest frame (cheap encode; no differencing LLM) so
+                # the human reviews the result they are about to judge.
+                if (
+                    use_visual_feedback
+                    and args.model in VLM_MODELS
+                    and post_step_frame is not None
+                ):
+                    _img, _b64 = _encode_frame_png(post_step_frame)
+                    visual_feedback_imgs.append(_img)
+                    await emit(VisualFeedbackEvent(
+                        session_id=session.session_id, image_base64=_b64,
+                    ))
+
+                has_snapshot = episode_snapshot is not None and hasattr(env, "restore_state")
+
+                def _restore_and_render():
+                    # Exact restore to the episode start, or a fresh reset if no
+                    # snapshot was captured (non-sim env) — task restarts.
+                    if has_snapshot:
+                        logger.info("interactive feedback: restoring episode snapshot")
+                        o = env.restore_state(episode_snapshot)
+                    else:
+                        logger.info("interactive feedback: no snapshot -> env.reset()")
+                        o, _i = env.reset()
+                    f = env.render() if hasattr(env, "render") else None
+                    return o, f
+
+                # The full code of the attempt just run — the only attempt-
+                # specific context carried into the regeneration.
+                prev_attempt_code = "\n\n".join(code_blocks)
+
+                # Pause for the human. Finish ends the trial; feedback resets and
+                # re-attempts; an empty send is a no-op (keep waiting).
+                new_blocks: list[str] = []
+                while True:
+                    action, fb_text = await _wait_for_human(reward)
+                    if action == "finish":
+                        human_finished = True
+                        break
+                    if action != "feedback":
+                        continue  # empty send / legacy reset: keep waiting
+                    feedback_text = fb_text
+
+                    if not has_snapshot:
+                        logger.warning("No episode snapshot; falling back to env.reset()")
+                        await emit(ErrorEvent(
+                            session_id=session.session_id,
+                            message=(
+                                "No episode snapshot was available — restarting from a "
+                                "fresh reset instead of the exact episode start."
+                            ),
+                            recoverable=True,
+                        ))
+                    obs, reset_frame = await run_in_env_thread(_restore_and_render)
+
+                    # Regeneration context = clean task base (KEEPS the API / tool
+                    # docs) + previous attempt's full code + feedback. Only the
+                    # previous turn's reasoning / intermediate steps are dropped.
+                    gen_prompt = copy.deepcopy(clean_base_prompt)
+                    reset_note = (
+                        "The simulator has been reset to the start of this episode; "
+                        "none of the earlier steps persist. Your previous attempt's "
+                        "code was:\n```python\n"
+                        f"{prev_attempt_code}\n```"
+                    )
+                    gen_prompt.append({
+                        "role": "user",
+                        "content": [{"type": "text", "text": reset_note}],
+                    })
+                    if reset_frame is not None:
+                        _img, _b64url = _encode_frame_png(reset_frame)
+                        # Always surface the post-reset frame so the human can
+                        # visually confirm the scene returned to the episode start
+                        # (independent of use_visual_feedback / viser playback).
+                        await emit(VisualFeedbackEvent(
+                            session_id=session.session_id,
+                            image_base64=_b64url,
+                            description="Environment reset",
+                        ))
+                        # Only feed it to the model when visual feedback is on.
+                        if use_visual_feedback:
+                            gen_prompt[-1]["content"].append(
+                                {"type": "image_url", "image_url": {"url": _b64url}}
+                            )
+                    if feedback_text:
+                        logger.info(f"Human feedback: {feedback_text[:100]}...")
+                        gen_prompt.append({
+                            "role": "user",
+                            "content": [{"type": "text", "text": feedback_text}],
+                        })
+
+                    turn_number += 1
+                    raw_code, reasoning = await _stream_query(
+                        gen_prompt, ThinkingPhase.INITIAL, turn_number
+                    )
+                    new_blocks = _extract_code(raw_code) if raw_code else []
+                    await emit(ModelStreamingEndEvent(
+                        session_id=session.session_id,
+                        content=raw_code,
+                        reasoning=reasoning,
+                        code_blocks=new_blocks,
+                        decision=DecisionType.INITIAL,
+                    ))
+                    all_responses.append({
+                        "block_idx": [0],
+                        "code_blocks": new_blocks,
+                        "decision": "feedback_retry",
+                        "reasoning": reasoning if reasoning else "",
+                    })
+                    if new_blocks:
+                        break  # got code -> re-run the model multi-turn on it
+                    await emit(ErrorEvent(
+                        session_id=session.session_id,
+                        message="The model produced no code. Add feedback and try again.",
+                        recoverable=True,
+                    ))
+
+                if human_finished:
+                    break  # exit execution loop -> trial complete
+
+                # Re-run the WHOLE model multi-turn on the fresh attempt.
+                code_blocks = list(new_blocks)
+                code_block_metadata = [{"generation": 0, "regenerated": False}] * len(new_blocks)
+                code_block_idx = 0
+                force_end = False
+                session.total_code_blocks = len(code_blocks)
+                continue
 
             code = code_blocks[code_block_idx]
             session.current_block_index = code_block_idx
@@ -585,6 +720,13 @@ async def run_trial_async(
                     )
                     asyncio.run_coroutine_threadsafe(session.emit(event), exec_main_loop)
                     step_counter[0] += 1
+                    trace.log_tool(
+                        tool_name=step.tool_name,
+                        text=step.text,
+                        block_index=code_block_idx,
+                        step_index=step.step_index,
+                        n_images=len(step.images),
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to emit execution step: {e}")
 
@@ -594,6 +736,7 @@ async def run_trial_async(
                 emit_callback=emit_execution_step,
             )
 
+            timed_out = False
             try:
                 # Run step + render in the same thread to keep MuJoCo GL context.
                 # We capture the frame here because MuJoCo's osmesa GL context is
@@ -636,12 +779,18 @@ async def run_trial_async(
                         obs, _ = await run_in_env_thread(lambda: env.reset())
                     except Exception:
                         pass
-                    break  # Exit code block loop, go to multi-turn decision
+                    timed_out = True
             finally:
                 # Finalize execution logger and get history
                 exec_history = execution_logger.finalize_execution_context()
                 if exec_history and step_counter[0] > 0:
                     logger.info(f"Code block {code_block_idx} had {len(exec_history.steps)} execution steps")
+
+            # A timeout leaves obs_next/reward unset: end the model loop now.
+            # Headless stops; interactive pauses for the human at the loop top.
+            if timed_out:
+                force_end = True
+                continue
 
             # Check for cancellation after executing (might have been stopped during execution)
             if is_cancelled():
@@ -660,165 +809,34 @@ async def run_trial_async(
             code_block_idx += 1
             obs = obs_next
 
-            # ====================================================================
-            # Interactive turn handling (§9). A whole attempt is one model
-            # generation: execute ALL of its code blocks, THEN pause so the
-            # human reviews the final result (§9.1). The human either Finishes
-            # (the sole success signal, §4.1) or sends — any send resets the
-            # scene to the episode start and regenerates a full fresh attempt
-            # from [task + previous attempt's code + feedback] (§9.3). No
-            # incremental multi-turn, no REGENERATE/FINISH scaffold, no separate
-            # Reset action. Resetting each attempt also gives the viser playback
-            # one segment per attempt (§9.4). This path does NOT depend on
-            # multi_turn_prompt being configured.
-            # ====================================================================
-            if session.await_user_input_each_turn:
-                if info_step.get("stderr"):
-                    stderr_history.append(info_step["stderr"])
-                # Run the remaining blocks of this attempt before pausing.
-                if code_block_idx < len(code_blocks):
-                    continue
-
-                # Surface the post-execution frame in the UI (the result the
-                # human is about to review). Cheap encode; no differencing LLM.
-                if (
-                    use_visual_feedback
-                    and args.model in VLM_MODELS
-                    and post_step_frame is not None
-                ):
-                    _img, _b64 = _encode_frame_png(post_step_frame)
-                    visual_feedback_imgs.append(_img)
-                    await emit(VisualFeedbackEvent(
-                        session_id=session.session_id,
-                        image_base64=_b64,
-                    ))
-
-                has_snapshot = episode_snapshot is not None and hasattr(env, "restore_state")
-
-                def _restore_and_render():
-                    # Exact restore to the episode start, or a fresh reset if
-                    # no snapshot was captured (non-sim env) — task restarts.
-                    if has_snapshot:
-                        o = env.restore_state(episode_snapshot)
-                    else:
-                        o, _i = env.reset()
-                    f = env.render() if hasattr(env, "render") else None
-                    return o, f
-
-                # The full code of the attempt just executed — the only context
-                # carried into the regeneration (§9.3).
-                prev_attempt_code = "\n\n".join(code_blocks)
-
-                # Pause for the human. Finish ends the trial; only actual
-                # feedback resets the scene and re-attempts. An empty send is a
-                # no-op (keep waiting) — no turn timeout / auto restart.
-                new_blocks: list[str] = []
-                while True:
-                    action, fb_text = await _wait_for_human(reward)
-                    if action == "finish":
-                        human_finished = True
-                        break
-                    if action != "feedback":
-                        # Empty send / legacy reset with no text: nothing to
-                        # modify — re-pause and keep waiting.
-                        continue
-                    feedback_text = fb_text
-
-                    if not has_snapshot:
-                        logger.warning("No episode snapshot; falling back to env.reset()")
-                        await emit(ErrorEvent(
-                            session_id=session.session_id,
-                            message=(
-                                "No episode snapshot was available — restarting from a "
-                                "fresh reset instead of the exact episode start."
-                            ),
-                            recoverable=True,
-                        ))
-                    obs, reset_frame = await run_in_env_thread(_restore_and_render)
-
-                    # Regeneration context: task + previous attempt's full code +
-                    # the human's feedback (the only added context).
-                    gen_prompt = copy.deepcopy(clean_base_prompt)
-                    reset_note = (
-                        "The simulator has been reset to the start of this episode; "
-                        "none of the earlier steps persist. Your previous attempt's "
-                        "code was:\n```python\n"
-                        f"{prev_attempt_code}\n```"
-                    )
-                    gen_prompt.append({
-                        "role": "user",
-                        "content": [{"type": "text", "text": reset_note}],
-                    })
-                    if use_visual_feedback and reset_frame is not None:
-                        _img, _b64url = _encode_frame_png(reset_frame)
-                        gen_prompt[-1]["content"].append(
-                            {"type": "image_url", "image_url": {"url": _b64url}}
-                        )
-                        await emit(VisualFeedbackEvent(
-                            session_id=session.session_id,
-                            image_base64=_b64url,
-                            description="Environment reset",
-                        ))
-                    if feedback_text:
-                        logger.info(f"Human feedback: {feedback_text[:100]}...")
-                        gen_prompt.append({
-                            "role": "user",
-                            "content": [{"type": "text", "text": feedback_text}],
-                        })
-
-                    turn_number += 1
-                    raw_code, reasoning = await _stream_query(
-                        gen_prompt, ThinkingPhase.INITIAL, turn_number
-                    )
-                    new_blocks = _extract_code(raw_code) if raw_code else []
-                    await emit(ModelStreamingEndEvent(
-                        session_id=session.session_id,
-                        content=raw_code,
-                        reasoning=reasoning,
-                        code_blocks=new_blocks,
-                        decision=DecisionType.INITIAL,
-                    ))
-                    all_responses.append({
-                        "block_idx": [0],
-                        "code_blocks": new_blocks,
-                        "decision": "feedback_retry",
-                        "reasoning": reasoning if reasoning else "",
-                    })
-                    if new_blocks:
-                        break  # got code -> execute the fresh attempt
-                    await emit(ErrorEvent(
-                        session_id=session.session_id,
-                        message="The model produced no code. Add feedback and try again.",
-                        recoverable=True,
-                    ))
-
-                if human_finished:
-                    break  # exit execution loop
-
-                code_blocks = list(new_blocks)
-                code_block_metadata = [{"generation": 0, "regenerated": False}] * len(new_blocks)
-                code_block_idx = 0
-                session.total_code_blocks = len(code_blocks)
-                continue  # restart execution loop with the fresh attempt
+            if info_step.get("stderr"):
+                stderr_history.append(info_step["stderr"])
+            if "terminated episode" in (info_step.get("stderr") or ""):
+                truncated = True
+                force_end = True
+                continue
 
             # ====================================================================
-            # Multi-turn decision (headless/benchmark, model-driven; §9.6)
+            # Model self-driven multi-turn decision (REGENERATE / FINISH).
+            # Drives BOTH interactive and headless when multi_turn_prompt is
+            # configured. In interactive, FINISH ends THIS model loop (not the
+            # trial) and the human pause at the loop top then fires.
             # ====================================================================
             if multi_turn_prompt:
-                # Compute the executed and remaining code blocks
-                # import pdb; pdb.set_trace()
+                # Compute the executed code blocks for the decision prompt.
                 executed_code = "# Prior executed code blocks:\n"
                 for block_idx in range(code_block_idx):
                     if block_idx < code_block_idx - 1:
                         executed_code += f"# Code block {block_idx}\n{code_blocks[block_idx]}\n"
                     else:
                         executed_code += f"\n\n# Last executed code block (Code block {block_idx}):\n{code_blocks[block_idx]}\n"
-                # executed_code = "\n".join(code_blocks[:code_block_idx])
-                # remaining_code = "\n".join(code_blocks[code_block_idx:])
-                # Check for episode termination
-                if "terminated episode" in info_step["stderr"]:
-                    truncated = True
-                    break
+
+                # A hard execution error (non-zero sandbox rc -> stderr traceback)
+                # means the task cannot be complete via this turn. Route straight
+                # to a code revision: skip the VDM (it only confuses things and
+                # has misjudged broken states as "done"), and instruct the model
+                # to fix the error rather than FINISH.
+                errored = info_step.get("sandbox_rc", 0) != 0
 
                 # Build multi-turn prompt
                 complete_multi_turn_prompt = multi_turn_prompt.format(
@@ -826,9 +844,6 @@ async def run_trial_async(
                     console_stdout=info_step["stdout"],
                     console_stderr=info_step["stderr"],
                 )
-
-                if info_step["stderr"]:
-                    stderr_history.append(info_step["stderr"])
 
                 # Build visual feedback from the frame captured in the step thread
                 visual_feedback_base64 = None
@@ -845,30 +860,29 @@ async def run_trial_async(
                         image_base64=visual_feedback_base64,
                     ))
 
-                # Image differencing
+                # Image differencing — skipped on error (don't route errors
+                # through the VDM). Otherwise the VDM also gets the console
+                # stdout for grounding (a single camera view often can't show a
+                # small lift / height change).
                 visual_differencing_feedback = None
-                if use_img_differencing and len(visual_feedback_base64_history) >= 2:
-                    visual_differencing_prompt = [
-                        {
-                            "role": "system",
-                            "content": "You are a helpful assistant that describes the difference between the current state of the environment and the previous state of the environment with the goal of the task in mind and whether the task has been completed. Do *NOT* write any code.",
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": task_description},
-                                {"type": "text", "text": "Describe the difference between the current state of the environment and the previous state of the environment with the goal of the task in mind and whether the task has been completed. Do *NOT* write any code.."},
-                                {"type": "text", "text": "Previous state:"},
-                                {"type": "image_url", "image_url": {"url": visual_feedback_base64_history[-2]}},
-                                {"type": "text", "text": "Current state:"},
-                                {"type": "image_url", "image_url": {"url": visual_feedback_base64_history[-1]}},
-                            ],
-                        },
-                    ]
+                if use_img_differencing and not errored and len(visual_feedback_base64_history) >= 2:
+                    visual_differencing_prompt = build_state_diff_prompt(
+                        task_description,
+                        visual_feedback_base64_history[-2],
+                        visual_feedback_base64_history[-1],
+                        console_output=info_step.get("stdout"),
+                    )
                     img_diff_response = await asyncio.to_thread(
                         _query_model, visual_differencing_args, visual_differencing_prompt
                     )
                     visual_differencing_feedback = img_diff_response.get("content") if img_diff_response else None
+                    trace.log_llm(
+                        phase="img_differencing",
+                        turn=turn_number,
+                        input_messages=visual_differencing_prompt,
+                        output_content=visual_differencing_feedback,
+                        model=visual_differencing_args.model,
+                    )
 
                     # Emit image analysis event for visualization
                     if visual_differencing_feedback:
@@ -883,9 +897,9 @@ async def run_trial_async(
                 if not use_visual_feedback:
                     visual_feedback_base64 = None
 
-                # Model decides REGENERATE / FINISH (interactive mode is handled
-                # earlier and never reaches here).
-                headless_finish = False
+                # Model decides REGENERATE / FINISH. On FINISH we set force_end
+                # so the loop top ends the pass — headless stops, interactive
+                # pauses for the human.
                 turn_number += 1
                 multi_turn_decision_prompt = _build_multi_turn_decision_prompt(
                     {"full_prompt": clean_base_prompt},
@@ -893,6 +907,20 @@ async def run_trial_async(
                     visual_feedback_base64,
                     visual_differencing_feedback,
                 )
+                if errored:
+                    # Push hard toward a revision: the code raised an error, so
+                    # the task is not done — fix it, don't FINISH.
+                    multi_turn_decision_prompt.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "text",
+                            "text": (
+                                "The code above raised an error (see stderr); the task is "
+                                "NOT complete. Respond with REGENERATE and corrected Python "
+                                "code that fixes the error. Do NOT respond FINISH."
+                            ),
+                        }],
+                    })
                 mt_content, mt_reasoning = await _stream_query(
                     multi_turn_decision_prompt, ThinkingPhase.MULTI_TURN, turn_number
                 )
@@ -902,6 +930,16 @@ async def run_trial_async(
                 else:
                     reasoning = mt_reasoning
                     decision, new_code = _parse_multi_turn_decision(mt_content)
+
+                # Never let a hard error end the trial as "finished": if the model
+                # still chose FINISH (or returned nothing parseable as code) on an
+                # error, treat it as a regeneration of the failed code so the loop
+                # keeps trying instead of stopping on a broken state.
+                if errored and decision == "finish":
+                    logger.warning("Model chose FINISH despite a hard error; forcing regenerate")
+                    decision = "regenerate"
+                    if not _extract_code(new_code or ""):
+                        new_code = mt_content or ""
 
                 if decision == "regenerate":
                     new_blocks = _extract_code(new_code)
@@ -942,10 +980,7 @@ async def run_trial_async(
                         "reasoning": reasoning if reasoning else new_code if new_code else "",
                     })
                     num_finishes += 1
-                    headless_finish = True
-
-                if headless_finish:
-                    break
+                    force_end = True
 
             logger.info(f"Code block {code_block_idx} done, {len(code_blocks)} total blocks")
 
@@ -1132,3 +1167,19 @@ async def run_trial_async(
         # Don't re-raise - error has been communicated via WebSocket
         # This allows clean recovery without task exception handling issues
         return None
+
+    finally:
+        # Render the human-readable trace.md from the live-written events on
+        # every exit path (success, Stop-button cancel, or error) — the JSONL
+        # files are written live, this just renders the readable timeline.
+        try:
+            await asyncio.to_thread(trace.finalize)
+        except Exception as _trace_exc:
+            logger.warning(f"Failed to render trace.md: {_trace_exc}")
+        # Release the env worker pool so a finished/cancelled trial doesn't leak
+        # its thread. wait=False: an in-flight env.step() can't be force-killed,
+        # but idle workers exit and queued futures are dropped instead of piling
+        # up across trials. (The process-exit hang is handled by the Ctrl-C
+        # watchdog in launch._run_web_ui.)
+        if env_executor is not None:
+            env_executor.shutdown(wait=False, cancel_futures=True)

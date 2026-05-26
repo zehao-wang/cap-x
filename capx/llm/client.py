@@ -177,6 +177,65 @@ def _completions_to_responses_convert_prompt(prompt: list[dict]) -> list[dict]:
 # Core query functions
 # ---------------------------------------------------------------------------
 
+# Cap retries so a permanently-down server surfaces an error instead of
+# hanging forever (~4 min backoff each, so ~40 min of tolerance covers a vLLM
+# restart while still terminating). Connection-level errors are retried too —
+# the previous code only retried HTTP status codes, so a server that was down
+# (refused connection) raised immediately despite the "keep calling" intent.
+MAX_QUERY_RETRIES = 10
+_RETRYABLE_STATUS = {404, 500, 502, 503, 504}
+
+
+def _post_with_retry(
+    server_url: str,
+    headers: dict,
+    payload: dict,
+    *,
+    stream: bool = False,
+) -> requests.Response:
+    """POST to an LLM server, retrying transient failures with bounded backoff.
+
+    Retries on connection-level errors (server bouncing / not yet up) and on
+    the retryable HTTP status codes, up to ``MAX_QUERY_RETRIES``. For streaming
+    callers this covers only connection setup — retrying there is safe because
+    no chunk has been yielded yet; mid-stream failures still propagate.
+    """
+    attempt = 0
+    while True:
+        try:
+            response = requests.post(
+                server_url,
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=200,
+                stream=stream,
+            )
+        except requests.exceptions.RequestException as exc:
+            if attempt >= MAX_QUERY_RETRIES:
+                raise
+            sleep_time = max(1.0, 240 + random.uniform(-90, 90))
+            print(
+                f"Retry {attempt + 1}/{MAX_QUERY_RETRIES}: connection error: {exc}. "
+                f"Retrying in {sleep_time:.0f}s..."
+            )
+            time.sleep(sleep_time)
+            attempt += 1
+            continue
+
+        if response.status_code in _RETRYABLE_STATUS and attempt < MAX_QUERY_RETRIES:
+            err_text = "" if stream else response.text
+            response.close()
+            sleep_time = max(1.0, 240 + random.uniform(-90, 90))
+            print(
+                f"Retry {attempt + 1}/{MAX_QUERY_RETRIES}: status {response.status_code}. "
+                f"{err_text[:200]} Retrying in {sleep_time:.0f}s..."
+            )
+            time.sleep(sleep_time)
+            attempt += 1
+            continue
+
+        return response
+
 
 def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     """Query vLLM server for code generation.
@@ -243,21 +302,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
         headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
     start_time = time.time()
-
-    # keep calling until it works
-    response = requests.post(
-        server_url, headers=headers, data=json.dumps(payload), timeout=200
-    )
-    retry = 1
-    while response.status_code in [404, 500, 502, 503, 504]:
-        sleep_time = 240 + random.uniform(-90, 90)
-        print(f"Retry {retry}. Model query failed with status code {response.status_code}. Error: {response.text}. Retrying in {sleep_time} seconds...")
-        time.sleep(sleep_time)
-        response = requests.post(
-            server_url, headers=headers, data=json.dumps(payload), timeout=200
-        )
-        retry += 1
-
+    response = _post_with_retry(server_url, headers, payload)
     end_time = time.time()
     print(f"Time taken to query model: {end_time - start_time:.2f} seconds")
     response.raise_for_status()
@@ -334,13 +379,7 @@ def query_model_streaming(
 
     start_time = time.time()
 
-    with requests.post(
-        args.server_url,
-        headers=headers,
-        data=json.dumps(payload),
-        timeout=200,
-        stream=True,
-    ) as response:
+    with _post_with_retry(args.server_url, headers, payload, stream=True) as response:
         response.raise_for_status()
 
         content_type = response.headers.get("content-type", "")

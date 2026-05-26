@@ -1,0 +1,71 @@
+========================================================================
+ diagnose_node.sh   host=lrdn2985.leonardo.local   time=2026-05-26 21:55:21   每项超时=10s
+========================================================================
+
+### 1. 四大文件系统读写 (出现 HANG(124) 即为故障盘) ###
+----- HOME = /leonardo/home/userexternal/zwang003 -----
+  [OK]        stat -f (查文件系统元数据)
+  [OK]        ls   (列目录)
+  [OK]        write+read+rm (实际读写)
+----- WORK = /leonardo_work/EUHPC_D33_222 -----
+  [OK]        stat -f (查文件系统元数据)
+  [OK]        ls   (列目录)
+  [OK]        write+read+rm (实际读写)
+----- FAST = /leonardo_scratch/fast/EUHPC_D33_222 -----
+  [HANG(124)] stat -f (查文件系统元数据)  <-- 这个路径/设备卡住了!
+  [OK]        ls   (列目录)
+  [OK]        write+read+rm (实际读写)
+----- SCRATCH = /leonardo_scratch/large/userexternal/zwang003 -----
+  [HANG(124)] stat -f (查文件系统元数据)  <-- 这个路径/设备卡住了!
+  [OK]        ls   (列目录)
+  [OK]        write+read+rm (实际读写)
+
+### 2. 关键库 / 模型路径 (能否真正读到内容,'连库都读不了'就卡在这) ###
+  [OK]        读 venv python 头部字节        (/leonardo/home/userexternal/zwang003/Projects/cap-x/.venv/bin/python)
+  [OK]        读 conda vllm python 头部字节  (/leonardo/home/userexternal/zwang003/miniconda3/envs/vllm/bin/python3)
+  [OK]        ls 模型缓存目录               (/leonardo_scratch/fast/EUHPC_D33_222/zwang003/cache/huggingface/hub)
+  [OK]        ls 日志目录                   (/leonardo_scratch/fast/EUHPC_D33_222/cap-x/logs)
+
+### 3. 挂载点全景 (df 本身卡住=有挂载死了) ###
+  [OK]        df -hT
+  (上面若是 HANG(124),说明某个挂载点已经无响应)
+
+### 4. 节点资源 / GPU 健康 ###
+  load / mem:
+  [OK]        uptime
+  [OK]        free -h
+  GPU:
+  [OK]        nvidia-smi (显存/利用率)
+
+### 5. 内核日志里的存储/驱动报错 (需要权限,读不到可忽略) ###
+[Tue May 26 18:34:22 2026] Lustre: 5729:0:(client.c:2336:ptlrpc_expire_one_request()) @@@ Request sent has timed out for slow reply: [sent 1779813329/real 1779813329]  req@000000001302566d x1864758015397056/t0(0) o400->lscratch-OST007d-osc-ff1e92dd4a459800@10.128.84.58@o2ib:28/4 lens 224/224 e 0 to 1 dl 1779813373 ref 1 fl Rpc:XNQr/0/ffffffff rc 0/-1 job:''
+[Tue May 26 18:35:52 2026] Lustre: 5721:0:(client.c:2336:ptlrpc_expire_one_request()) @@@ Request sent has failed due to network error: [sent 1779813441/real 1779813462]  req@000000001d3ae5e6 x1864758015535104/t0(0) o400->lscratch-OST007a-osc-ff1e92dd4a459800@10.128.84.57@o2ib:28/4 lens 224/224 e 0 to 1 dl 1779813547 ref 1 fl Rpc:eXNQr/0/ffffffff rc 0/-1 job:''
+[Tue May 26 18:35:52 2026] Lustre: lscratch-OST007b-osc-ff1e92dd4a459800: Connection to lscratch-OST007b (at 10.128.84.57@o2ib) was lost; in progress operations using this service will wait for recovery to complete
+[Tue May 26 18:35:52 2026] Lustre: 5721:0:(client.c:2336:ptlrpc_expire_one_request()) Skipped 2 previous similar messages
+[Tue May 26 18:35:52 2026] Lustre: Skipped 1 previous similar message
+[Tue May 26 18:36:07 2026] Lustre: 5725:0:(client.c:2336:ptlrpc_expire_one_request()) @@@ Request sent has failed due to network error: [sent 1779813456/real 1779813477]  req@00000000ba366655 x1864758015554944/t0(0) o400->lscratch-OST0076-osc-ff1e92dd4a459800@10.128.84.55@o2ib:28/4 lens 224/224 e 0 to 1 dl 1779813560 ref 1 fl Rpc:eXNQr/0/ffffffff rc 0/-1 job:''
+[Tue May 26 18:36:07 2026] Lustre: lscratch-OST0077-osc-ff1e92dd4a459800: Connection to lscratch-OST0077 (at 10.128.84.55@o2ib) was lost; in progress operations using this service will wait for recovery to complete
+[Tue May 26 18:36:07 2026] Lustre: 5725:0:(client.c:2336:ptlrpc_expire_one_request()) Skipped 1 previous similar message
+[Tue May 26 18:37:28 2026] LNetError: 3957:0:(o2iblnd_cb.c:3489:kiblnd_check_txs_locked()) Timed out tx: tx_queue, 37 seconds
+[Tue May 26 18:37:28 2026] LNetError: 3957:0:(o2iblnd_cb.c:3581:kiblnd_check_conns()) Timed out RDMA with 10.128.84.56@o2ib (37): c: 0, oc: 0, rc: 32
+[Tue May 26 18:37:37 2026] LNetError: 3957:0:(o2iblnd_cb.c:3489:kiblnd_check_txs_locked()) Timed out tx: tx_queue, 33 seconds
+[Tue May 26 18:37:37 2026] LNetError: 3957:0:(o2iblnd_cb.c:3581:kiblnd_check_conns()) Timed out RDMA with 10.128.84.58@o2ib (63): c: 0, oc: 0, rc: 32
+[Tue May 26 21:43:19 2026] ptrace attach of "python -m capx.envs.launch --config-path env_configs/cube_lifting/franka_robosuite_cube_lifting_multiturn_vdm_reduced_api_skill_lib.yaml --model Qwen3.6-27B --server-url http://lrdn2479:8000/v1/chat/completions --max-tokens 20480 --reasoning-effort medium --visual-differencing-model Qwen3.6-27B --visual-differencing-model-server-url http://lrdn2479:8000/v1/chat/completions --output-dir /leonardo_scratch/fast/EUHPC_D33_222/cap-x/outputs/agent0_qwen36_robosuite_interactive_20260526_211900 --web-ui True --web-ui-port 8200"[2883740] was attempted by "cat /proc/2883740/syscall"[2883973]
+[Tue May 26 21:43:54 2026] LustreError: 2884008:0:(osc_quota.c:319:osc_quotactl()) ptlrpc_queue_wait failed, rc: -5
+[Tue May 26 21:43:54 2026] LustreError: 2884008:0:(osc_quota.c:319:osc_quotactl()) Skipped 4 previous similar messages
+[Tue May 26 21:44:03 2026] LustreError: 2884008:0:(osc_quota.c:319:osc_quotactl()) ptlrpc_queue_wait failed, rc: -4
+[Tue May 26 21:44:03 2026] LustreError: 2884008:0:(osc_quota.c:319:osc_quotactl()) Skipped 6 previous similar messages
+[Tue May 26 21:52:47 2026] LustreError: 2884176:0:(osc_quota.c:319:osc_quotactl()) ptlrpc_queue_wait failed, rc: -5
+[Tue May 26 21:53:33 2026] LustreError: 2884263:0:(osc_quota.c:319:osc_quotactl()) ptlrpc_queue_wait failed, rc: -5
+[Tue May 26 21:53:33 2026] LustreError: 2884263:0:(osc_quota.c:319:osc_quotactl()) Skipped 15 previous similar messages
+  (以上若有 'timed out / evicted / Xid' 等字样 = 存储或 GPU 驱动出问题)
+
+### 6. 卡死进程探测 (可选: PIDS='pid1 pid2 ...' 传入) ###
+  (未传 PIDS,跳过。例如: PIDS='2883740 2883703' bash diagnose_node.sh)
+
+========================================================================
+ 判读速记:
+   - 第1/2/3节出现 [HANG(124)]  => 那个盘读写超时 (你说的老问题复发)
+   - 全部 [OK] 且 GPU 正常       => 节点/盘都健康,卡死另有原因
+   - 第5节有 timed out/evicted/Xid => 存储或 GPU 驱动故障,需要换节点/报管理员
+========================================================================

@@ -26,15 +26,35 @@ LOG_DIR="${LOG_DIR:-$SCRATCH_ROOT/cap-x/logs}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRATCH_ROOT/cap-x/outputs}"
 mkdir -p "$LOG_DIR" "$OUTPUT_ROOT"
 
-MODELS_ROOT="${MODELS_ROOT:-/leonardo_scratch/fast/EUHPC_D33_222/zwang003/models}"
-export HF_HOME="${HF_HOME:-/leonardo_scratch/fast/EUHPC_D33_222/zwang003/cache/huggingface}"
+# Model-cache root — the ONE knob for where the models are read from: SAM3 +
+# Molmo via HF_HOME, robot URDFs via robot_descriptions. Defaults to scratch.
+# Point it at a healthy filesystem (e.g. $WORK) to survive a Lustre/scratch
+# outage — same var that prefetch uses, so you read from where you downloaded:
+#   CAPX_CACHE_ROOT=$WORK/zwang003 bash scripts/prefetch_agent0_models.sh   # once, on login
+#   CAPX_CACHE_ROOT=$WORK/zwang003 bash scripts/run_agent0_qwen36_robosuite_interactive.sh
+# NOTE: an explicit CAPX_CACHE_ROOT must win even over an HF_HOME exported by
+# your ~/.bashrc (which sets HF_HOME to scratch). So when CAPX_CACHE_ROOT is
+# given, derive all three paths from it unconditionally; otherwise fall back to
+# scratch while still honoring any pre-set HF_HOME/MODELS_ROOT.
+if [[ -n "${CAPX_CACHE_ROOT:-}" ]]; then
+    MODELS_ROOT="$CAPX_CACHE_ROOT/models"
+    export HF_HOME="$CAPX_CACHE_ROOT/cache/huggingface"
+    export ROBOT_DESCRIPTIONS_CACHE="$CAPX_CACHE_ROOT/models/robot_descriptions"
+else
+    CAPX_CACHE_ROOT="/leonardo_scratch/fast/EUHPC_D33_222/zwang003"
+    MODELS_ROOT="${MODELS_ROOT:-$CAPX_CACHE_ROOT/models}"
+    export HF_HOME="${HF_HOME:-$CAPX_CACHE_ROOT/cache/huggingface}"
+    export ROBOT_DESCRIPTIONS_CACHE="${ROBOT_DESCRIPTIONS_CACHE:-$MODELS_ROOT/robot_descriptions}"
+fi
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export ROBOT_DESCRIPTIONS_CACHE="${ROBOT_DESCRIPTIONS_CACHE:-$MODELS_ROOT/robot_descriptions}"
 
 if [[ ! -d "$HF_HOME" || ! -d "$ROBOT_DESCRIPTIONS_CACHE" ]]; then
-    echo "ERROR: missing offline caches under $MODELS_ROOT." >&2
-    echo "       Run on login node: bash scripts/prefetch_agent0_models.sh" >&2
+    echo "ERROR: missing model caches:" >&2
+    echo "         HF_HOME=$HF_HOME" >&2
+    echo "         ROBOT_DESCRIPTIONS_CACHE=$ROBOT_DESCRIPTIONS_CACHE" >&2
+    echo "       Pre-fetch them on the login node with the SAME CAPX_CACHE_ROOT:" >&2
+    echo "         CAPX_CACHE_ROOT=$CAPX_CACHE_ROOT bash scripts/prefetch_agent0_models.sh" >&2
     exit 1
 fi
 
@@ -124,11 +144,18 @@ start_if_down 8122 molmo \
     env MOLMO_GPU=2 \
     bash scripts/serve_molmo_local.sh
 
-echo "Waiting 30s for helper servers..."
+# These are GPU model servers (SAM3 / GraspNet / PyRoKi / vLLM-Molmo) that take
+# minutes to load — they will almost always still be DOWN at 30s. That is fine:
+# they keep loading in the background and just need to be UP before you start a
+# trial in the browser. The web UI itself does NOT wait for them.
+echo "Waiting 30s for helper servers (they load in the background)..."
 sleep 30
 for p in 8114 8115 8116 8122; do
-    code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "http://127.0.0.1:$p/" 2>/dev/null || echo 000)
-    echo "  port $p: $([ "$code" != "000" ] && echo "UP ($code)" || echo DOWN)"
+    # -w prints the HTTP code; on a failed connection it prints "000". Don't add
+    # a `|| echo 000` — that doubled the output to "000000" and falsely read UP.
+    code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "http://127.0.0.1:$p/" 2>/dev/null)
+    [ -z "$code" ] && code=000
+    echo "  port $p: $([ "$code" != "000" ] && echo "UP ($code)" || echo "still loading / down")"
 done
 
 # ---------------------------------------------------------------------------

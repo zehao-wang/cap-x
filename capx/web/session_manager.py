@@ -7,13 +7,14 @@ import ctypes
 import logging
 import threading
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 from fastapi import WebSocket
 
-from capx.web.models import SessionState, WSEventBase
+from capx.web.models import SessionState, StateUpdateEvent, WSEventBase
 
 if TYPE_CHECKING:
     from capx.web.async_trial_runner import TrialContext
@@ -26,6 +27,11 @@ logger = logging.getLogger(__name__)
 # Wrapped in NUL bytes so they can never collide with real typed feedback.
 RESET_COMMAND = "\x00__CAPX_RESET__\x00"
 FINISH_COMMAND = "\x00__CAPX_FINISH__\x00"
+
+# Cap the replay buffer so an unbounded interactive session can't grow it
+# without limit. Heavy base64 image payloads are also stripped from the stored
+# copy (see Session._record_for_replay), so the bound is on event count, not bytes.
+EVENT_HISTORY_MAXLEN = 5000
 
 
 async def run_blocking_with_interrupt(
@@ -88,12 +94,19 @@ class Session:
     await_user_input_each_turn: bool = False
     execution_timeout: int = 180  # seconds per code block
 
-    # Event history for replay on reconnect
-    event_history: list[str] = field(default_factory=list)
+    # Event history for replay on reconnect (bounded; see EVENT_HISTORY_MAXLEN)
+    event_history: deque[str] = field(
+        default_factory=lambda: deque(maxlen=EVENT_HISTORY_MAXLEN)
+    )
 
     # Async coordination
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     user_injection_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
+    # Serializes all WebSocket sends for this session. Emits can be scheduled
+    # concurrently onto the loop (e.g. execution-step callbacks fired from the
+    # env worker thread via run_coroutine_threadsafe), and Starlette/uvicorn
+    # forbids overlapping sends on a single socket — this lock prevents that.
+    _send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     # Running task reference
     task: asyncio.Task | None = None
@@ -118,30 +131,76 @@ class Session:
     completed_at: datetime | None = None
 
     async def emit(self, event: WSEventBase) -> None:
-        """Broadcast event to all connected WebSocket clients and store for replay."""
+        """Broadcast event to all connected WebSocket clients and store for replay.
+
+        Sends are serialized under ``_send_lock`` and iterate over a snapshot of
+        the connection list, so concurrently-scheduled emits never overlap sends
+        on one socket nor mutate the list mid-iteration.
+        """
         message = event.model_dump_json()
-        # Store for replay on reconnect (skip high-frequency streaming deltas)
-        if event.type != "model_streaming_delta":
-            self.event_history.append(message)
-        disconnected = []
+        self._record_for_replay(event, message)
 
-        for ws in self.websockets:
+        async with self._send_lock:
+            disconnected = []
+            for ws in list(self.websockets):
+                try:
+                    await ws.send_text(message)
+                except Exception as e:
+                    logger.warning(f"Failed to send to WebSocket: {e}")
+                    disconnected.append(ws)
+            # Clean up disconnected clients
+            for ws in disconnected:
+                if ws in self.websockets:
+                    self.websockets.remove(ws)
+
+    def _record_for_replay(self, event: WSEventBase, message: str) -> None:
+        """Append an event to the bounded replay history.
+
+        High-frequency streaming deltas are skipped entirely; heavy base64 image
+        payloads are stripped from the *stored* copy (the live broadcast above
+        still carries them) so the buffer stays small over a long session.
+        """
+        if event.type == "model_streaming_delta":
+            return
+        if event.type == "execution_step" and getattr(event, "images", None):
+            message = event.model_copy(update={"images": []}).model_dump_json()
+        elif event.type == "visual_feedback" and getattr(event, "image_base64", None):
+            message = event.model_copy(update={"image_base64": ""}).model_dump_json()
+        self.event_history.append(message)
+
+    async def attach_websocket(self, websocket: WebSocket) -> None:
+        """Replay history + current state to a freshly-accepted ws, then register it.
+
+        Runs under the same send lock as ``emit`` and registers the socket only
+        after replay completes, so a running trial's emits can neither interleave
+        sends on this socket nor duplicate/reorder the replayed history.
+        """
+        async with self._send_lock:
+            if self.event_history:
+                logger.info(
+                    f"Replaying {len(self.event_history)} events for session {self.session_id}"
+                )
+                for event_json in list(self.event_history):
+                    try:
+                        await websocket.send_text(event_json)
+                    except Exception:
+                        return  # client vanished mid-replay; don't register it
             try:
-                await ws.send_text(message)
-            except Exception as e:
-                logger.warning(f"Failed to send to WebSocket: {e}")
-                disconnected.append(ws)
-
-        # Clean up disconnected clients
-        for ws in disconnected:
-            self.websockets.remove(ws)
+                await websocket.send_text(
+                    StateUpdateEvent(
+                        session_id=self.session_id, state=self.state
+                    ).model_dump_json()
+                )
+            except Exception:
+                return
+            self.websockets.append(websocket)
 
     def reset(self) -> None:
         """Reset session state for a new trial."""
         self.state = SessionState.IDLE
         self.cancel_event = asyncio.Event()
         self.user_injection_queue = asyncio.Queue()
-        self.event_history = []
+        self.event_history = deque(maxlen=EVENT_HISTORY_MAXLEN)
         self.task = None
         self.env = None
         self.execution_thread_id = None

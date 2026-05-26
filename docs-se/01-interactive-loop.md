@@ -8,48 +8,67 @@
 
 ## 1. Live Loop & Success Signal
 
-主交互循环以 human-in-the-loop 方式执行任务，直到成功。
+主交互循环以 human-in-the-loop 方式执行任务，直到人确认成功。
 
-- **success signal 在新设计里只允许人给**：VDM 不在 live loop 里判定成功；成功与否由
-  用户在 interactive 窗口确认。
+- **success signal 只允许人给**：模型自己的 `FINISH` **永不结束** trial；成功与否由用户在
+  interactive 窗口点 **Finish** 确认。
 - 仅当用户确认成功，才进入 [Feedback Postprocessor](03-feedback-postprocessor.md) →
   写入 `history_pool`。
 
-核心原则：**一次只围绕同一个 trial 反复修改，success 只由人给，每次 feedback 默认重置
-场景重来**。
+核心原则：**模型自己跑完整的多轮自纠错（multi-turn），结束后人来评判；人 feedback 默认
+reset 场景、基于反馈重跑整轮**。
 
-## 2. 每轮流程
+## 2. 两层循环
+
+interactive 在 **模型自驱 multi-turn** 外面套一层 **人类循环**：
 
 ```
-模型生成代码 → 执行 → 展示执行结果 → 暂停等人（永远在"执行之后"）
-        ↑                                              │
-        └──────── feedback：reset 场景 + 重生成 ◄───────┘
+   ┌──────────────── 一个 model multi-turn pass ────────────────┐
+   │  生成代码 → 执行一块 → (视觉反馈/差分) → 模型决策            │
+   │      ↑                                          │           │
+   │      └──── REGENERATE：替换剩余代码（增量，保留状态） ◄────┘ │
+   └───────────────────────────┬───────────────────────────────┘
+                               │ pass 结束（FINISH / 到 limit / 报错·超时 / episode terminated）
+                               ▼
+                       暂停，等人评判
+                   ┌───────────┴───────────┐
+              Finish=成功收尾        feedback：reset 场景 + 基于反馈重跑整轮
+                                          （空发送=继续等）
 ```
 
-- **暂停点永远在一次代码执行之后**：人看到执行结果后才被要求给反馈（不会在没有执行结果时
-  弹 feedback）。一次模型生成（attempt）可能含多个 code block；interactive 模式会**先把这次
-  attempt 的所有 block 跑完再暂停**（不在 block 之间停）。
-- **无限等待，无超时 / 无定时重启**：暂停时一直等人，不存在"N 秒后自动重来"。Stop 按钮通过
-  取消任务来中断。
+- **内层（模型自驱 multi-turn）**：执行一个 code block 后，模型在 `REGENERATE / FINISH`
+  脚手架下决定是改写剩余代码（增量推进，**保留已执行状态**）还是结束。受 `MULTITURN_LIMIT`
+  约束。决策前的环境判定有两条规则：
+  - **报错（`sandbox_rc != 0`，stderr 有 traceback）直接走修代码、不经过 VDM**：跳过视觉差分，
+    并在决策 prompt 里明确要求"修复错误、不要 FINISH"；即使模型仍回 FINISH 也强制转成
+    regenerate——**硬错误永远不能被判成 finish/success**。
+  - **VDM 视觉差分会附上 console stdout 做 grounding**：单一固定相机视角常看不出"是否真的抬起"
+    这类细微变化，所以把代码打印的 stdout（如 `Lifted the cube`、测得位姿）作为"agent 自报、需与
+    图像互证"的上下文一并喂给 VDM，减少误判。
+- **外层（人类循环）**：仅 interactive 有。模型那一轮 multi-turn 结束后才暂停问人。
 
-## 3. 人的动作（只有两个）
+## 3. 何时暂停问人 + 人的动作
 
-- **Finish**：人确认成功并结束 trial。**这是 interactive 模式唯一的 success signal**（见 §1）；
-  模型自己的 "FINISH" 在 interactive 模式下**永不结束** trial。
-- **发 feedback（有文字）**：触发"reset + 重来"（见 §4）。
-- 空提交 / 无文字的 send = **no-op**（继续等待）。feedback **不长期保留**：只有当轮的
-  feedback 进入下一次生成的 context，不累积历史 feedback。
+**暂停点 = 模型那一轮 multi-turn 结束之时**，只有两种到达方式（见 §2）：
+
+1. 模型自己 `FINISH`（它认为成功了）；
+2. 模型因各种原因结束但未成功：到达 `MULTITURN_LIMIT`、报错/超时、或 episode terminated。
+
+无论哪种，都暂停并要求人评判。人的动作只有：
+
+- **Finish**：人确认成功并结束 trial。**这是 interactive 唯一的 success signal**（§1）。
+- **发 feedback（有文字）**：触发"reset + 基于反馈重跑整轮"（见 §4）。
+- **空提交 / 无文字的 send = no-op**（继续等）。**无限等待，无超时 / 无定时重启**；Stop 按钮
+  通过取消任务来中断。
 
 ## 4. feedback 默认 reset 重来
 
 每次 feedback 都**默认把场景 reset 回这个 episode 的初始状态**，然后用
-`[task prompt + 上一轮的代码 + 本次 feedback]` 作为 context **重新生成一份完整的尝试**并执行。
+`[任务 prompt（含 API/工具说明）+ 上一轮全部代码 + 本次 feedback]` 作为 context **重新跑一整轮
+模型 multi-turn**（模型可以在新一轮里再次 REGENERATE 多次）。
 
-- **没有增量 multi-turn**：interactive 模式不再做"执行一块→模型决定 regenerate/finish→再执行
-  下一块"的增量推进；每次 feedback 就是一次干净的全量重试。
 - **没有单独的 Reset 按钮**：reset 已经是 feedback 的默认行为。
-- context 里**只额外加"上一轮代码 + feedback"**，不带完整对话历史、也不再注入多步脚手架
-  prompt（feedback 以独立 user 消息进入对话）。
+- feedback **不长期保留**：只有当轮 feedback 进入下一轮的 context，不累积历史 feedback。
 - 模型若没产出代码：给出提示并回到暂停等下一次 feedback（不退出）。
 
 ## 5. reset 机制：MuJoCo 全量状态快照 / 恢复
@@ -61,19 +80,36 @@
   Python 侧记账；reset 时 `mj_setState` + `mj_forward` 精确恢复。对 robosuite 与 LIBERO
   通用（都走 robosuite 的 `MjSim`）。
 - 恢复时**为 viser `frame_history` 开启一段新 segment（`new_segment()`，不再 `clear()`）**：
-  每个 attempt = 一段独立 trail，先前 attempt 仍可回看。一次全新 trial 用正常 `reset()` →
-  `frame_history.clear()` 丢弃所有 segment，重新开始。回放细节见
-  [02-visualization.md](02-visualization.md)。
+  每次重跑 = 一段独立 trail，先前的仍可回看。一次全新 trial 用正常 `reset()` →
+  `frame_history.clear()` 丢弃所有 segment。回放细节见 [02-visualization.md](02-visualization.md)。
 
 ## 6. prompt 拼装
 
-- feedback / reset note 作为**独立的 user 消息**进入对话（不拼进多步模板字符串）。
-- **「多步模板」(`multi_turn_prompt`，REGENERATE/FINISH 脚手架) 只用于 headless/benchmark**
-  （见 §7 的模型自驱多轮）。interactive 不注入它，也**不再依赖它存在**才暂停等人。
+- **模型 multi-turn 用「多步脚手架」(`multi_turn_prompt`，REGENERATE/FINISH 模板)**：interactive
+  与 headless **一致使用**——这是模型自驱多轮的核心。决策 prompt 由 `clean_base_prompt`（干净
+  任务 prompt）+ 已执行代码/console 输出 + 可选视觉反馈/差分 拼成。
+- **feedback 重跑的 context 区别对待**：用 `clean_base_prompt`（**保留 API/工具说明等关键信息**，
+  否则模型不知道能调用哪些 tool）+ 上一轮全部代码（reset note 里）+ feedback。三者作为独立
+  user 消息追加，**只省略上一轮的思考/中间过程**，不带完整对话历史。
 - **发送前折叠连续同角色消息**：上述拼装可能产生相邻的多条 user 消息，发送给 LLM 前合并为
-  一条，避免要求严格角色交替的 chat-template 服务端报错。
+  一条，避免要求严格角色交替的 chat-template 服务端报错（`_merge_consecutive_messages`）。
 
 ## 7. 与 headless / benchmark 的关系
 
-- **headless / 自动 benchmark 评测保持原样**：仍由模型自己驱动 `REGENERATE / FINISH`，无人
-  在环、无 reset。上述改动只作用在 interactive（`await_user_input_each_turn` 为真）。
+- **headless / 自动 benchmark 与 interactive 共用同一套模型自驱 multi-turn**（`while True` 内层
+  循环）。区别只有外层：headless 在模型 `FINISH`/到 cap 时**直接结束** trial（success = 环境
+  reward 或 `num_finishes>0`）；interactive 在同一点**暂停问人**，success = `human_finished`。
+
+## 8. 交互行为日志（debug / 追溯）
+
+每个 trial 把 agent↔LLM 的每次交互与 tool 调用流结构化落盘到 `output_dir/trial_XX/`，便于查询和
+追溯模型行为（实现 `capx/utils/trace_logger.py`，接进 `async_trial_runner.py`）：
+
+- **`llm_trace.jsonl`**：每次 LLM 调用一条记录——`phase`（initial / multi_turn / feedback_retry /
+  env_description / img_differencing）、`turn`、`model`、耗时、**完整输入 messages** 与
+  **输出 content + reasoning**（REGENERATE/FINISH 决策与生成的代码都在 output content 里）。输入里
+  的内联图片会被抽出存成 `trace_images/llmNNN_imgK.png`，JSONL 里只留引用，保持文件小、易 `jq` 查询。
+- **`events.jsonl`**：把 LLM 调用与 tool 执行步骤（`execution_logger` 的 step）**按时间顺序合并**，
+  实时追加，清晰看到「tool 调用流 + 每轮对话」的真实交织顺序。
+- **`trace.md`**：trial 结束（含成功 / Stop 取消 / 报错任一退出路径，写在 `finally` 里）时，
+  由 `events.jsonl` 渲染出的人类可读时间线。

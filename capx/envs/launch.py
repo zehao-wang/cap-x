@@ -185,6 +185,8 @@ def _ensure_frontend_built() -> None:
 
 def _run_web_ui(args: LaunchArgs, config: dict[str, Any]) -> None:
     """Start the interactive web UI server."""
+    import threading
+
     import uvicorn
     from capx.web.server import create_app
 
@@ -201,7 +203,36 @@ def _run_web_ui(args: LaunchArgs, config: dict[str, Any]) -> None:
         args.visual_differencing_model_server_url
     )
     print(f"\n  CaP-X Interactive Web UI: http://localhost:{port}\n")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+    # A trial drives env.step() and the LLM stream on non-daemon worker threads
+    # that can sit for minutes inside a MuJoCo step or a blocking socket read /
+    # retry-sleep. Plain uvicorn.run() then made Ctrl-C look dead: it waits
+    # indefinitely for the still-open viser/UI WebSocket to close, and even once
+    # past that the interpreter's atexit join blocks on any wedged worker thread.
+    # So bound the graceful wait and arm a daemon watchdog that hard-exits
+    # (os._exit bypasses the atexit join) a few seconds after shutdown starts.
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="0.0.0.0", port=port, timeout_graceful_shutdown=5)
+    )
+
+    def _force_exit_watchdog() -> None:
+        while not server.should_exit:
+            time.sleep(0.2)
+        # Ctrl-C requested shutdown. A clean shutdown (uvicorn graceful close +
+        # _stop_api_servers) finishes well within this grace and the process
+        # exits on its own — this daemon thread dies with it and never fires.
+        # The os._exit below only triggers when a worker thread is genuinely
+        # wedged (e.g. a 200s socket read or the LLM retry-sleep in
+        # _post_with_retry), which would otherwise hang the atexit thread-join
+        # forever and make Ctrl-C look dead.
+        time.sleep(10)
+        print("\n[web-ui] forcing exit (worker thread still busy)\n", flush=True)
+        os._exit(0)
+
+    threading.Thread(
+        target=_force_exit_watchdog, daemon=True, name="ctrlc-watchdog"
+    ).start()
+    server.run()
 
 
 # ---------------------------------------------------------------------------
@@ -214,10 +245,18 @@ def main(args: LaunchArgs) -> None:
 
     start_time = time.time()
     env_factory, config, api_servers = _load_config(args)
-    server_procs = _start_api_servers(api_servers)
+
+    # In web-UI mode the helper servers (SAM3/GraspNet/PyRoKi/Molmo) are started
+    # and kept alive *externally* by the interactive launch script so they persist
+    # across sessions. Starting them here too would double-launch GPU model
+    # servers that fight over the same GPUs and — because those servers need
+    # minutes to bind while _start_api_servers only polls ~120s/port — block
+    # before the web UI ever comes up. So only manage api_servers headless.
+    web_ui = config.get("web_ui", False)
+    server_procs = [] if web_ui else _start_api_servers(api_servers)
 
     try:
-        if config.get("web_ui", False):
+        if web_ui:
             _run_web_ui(args, config)
         else:
             _run_headless_trials(args, env_factory, config, start_time)

@@ -18,9 +18,23 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-MODELS_ROOT="${MODELS_ROOT:-/leonardo_scratch/fast/EUHPC_D33_222/zwang003/models}"
-export HF_HOME="${HF_HOME:-$MODELS_ROOT/hf_cache}"
-export ROBOT_DESCRIPTIONS_CACHE="${ROBOT_DESCRIPTIONS_CACHE:-$MODELS_ROOT/robot_descriptions}"
+# Model-cache root — the SAME knob the run scripts use, so we download to
+# exactly where they read from. Default scratch; override to a healthy FS:
+#   CAPX_CACHE_ROOT=$WORK/zwang003 bash scripts/prefetch_agent0_models.sh
+# (HF_HOME is $CAPX_CACHE_ROOT/cache/huggingface — matches the run scripts.
+#  The old default was $MODELS_ROOT/hf_cache, which did NOT match them.)
+# An explicit CAPX_CACHE_ROOT wins even over an HF_HOME exported by ~/.bashrc,
+# so we download to exactly the root you asked for (not the profile's scratch).
+if [[ -n "${CAPX_CACHE_ROOT:-}" ]]; then
+    MODELS_ROOT="$CAPX_CACHE_ROOT/models"
+    export HF_HOME="$CAPX_CACHE_ROOT/cache/huggingface"
+    export ROBOT_DESCRIPTIONS_CACHE="$CAPX_CACHE_ROOT/models/robot_descriptions"
+else
+    CAPX_CACHE_ROOT="/leonardo_scratch/fast/EUHPC_D33_222/zwang003"
+    MODELS_ROOT="${MODELS_ROOT:-$CAPX_CACHE_ROOT/models}"
+    export HF_HOME="${HF_HOME:-$CAPX_CACHE_ROOT/cache/huggingface}"
+    export ROBOT_DESCRIPTIONS_CACHE="${ROBOT_DESCRIPTIONS_CACHE:-$MODELS_ROOT/robot_descriptions}"
+fi
 
 mkdir -p "$HF_HOME" "$ROBOT_DESCRIPTIONS_CACHE"
 
