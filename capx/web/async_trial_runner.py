@@ -495,13 +495,10 @@ async def run_trial_async(
                 return "feedback", payload
             return "continue", ""
 
-        # Human feedback targets only the most recent code and is not retained
-        # long-term (§9.2): each turn's decision prompt is rebuilt from the clean
-        # task base plus the (unchanged) multi-turn template, with the current
-        # turn's feedback appended as its own user turn — no accumulation, no
-        # extra multi-step scaffolding.
-        # Most recent executed code — the only context retained across a reset.
-        last_executed_code = ""
+        # Human feedback targets only the most recent attempt and is not
+        # retained long-term (§9.2): each regeneration is rebuilt from the clean
+        # task base + the previous attempt's full code + the current feedback as
+        # its own user turn — no accumulation, no multi-step scaffold (§9.5).
         # Set when the human confirms success; the sole success signal in
         # interactive mode (§4.1).
         human_finished = False
@@ -551,7 +548,6 @@ async def run_trial_async(
                 raise asyncio.CancelledError("Cancelled during code execution")
 
             code = code_blocks[code_block_idx]
-            last_executed_code = code
             session.current_block_index = code_block_idx
 
             # Check for cancellation before executing (safety check)
@@ -665,7 +661,148 @@ async def run_trial_async(
             obs = obs_next
 
             # ====================================================================
-            # Multi-turn decision
+            # Interactive turn handling (§9). A whole attempt is one model
+            # generation: execute ALL of its code blocks, THEN pause so the
+            # human reviews the final result (§9.1). The human either Finishes
+            # (the sole success signal, §4.1) or sends — any send resets the
+            # scene to the episode start and regenerates a full fresh attempt
+            # from [task + previous attempt's code + feedback] (§9.3). No
+            # incremental multi-turn, no REGENERATE/FINISH scaffold, no separate
+            # Reset action. Resetting each attempt also gives the viser playback
+            # one segment per attempt (§9.4). This path does NOT depend on
+            # multi_turn_prompt being configured.
+            # ====================================================================
+            if session.await_user_input_each_turn:
+                if info_step.get("stderr"):
+                    stderr_history.append(info_step["stderr"])
+                # Run the remaining blocks of this attempt before pausing.
+                if code_block_idx < len(code_blocks):
+                    continue
+
+                # Surface the post-execution frame in the UI (the result the
+                # human is about to review). Cheap encode; no differencing LLM.
+                if (
+                    use_visual_feedback
+                    and args.model in VLM_MODELS
+                    and post_step_frame is not None
+                ):
+                    _img, _b64 = _encode_frame_png(post_step_frame)
+                    visual_feedback_imgs.append(_img)
+                    await emit(VisualFeedbackEvent(
+                        session_id=session.session_id,
+                        image_base64=_b64,
+                    ))
+
+                has_snapshot = episode_snapshot is not None and hasattr(env, "restore_state")
+
+                def _restore_and_render():
+                    # Exact restore to the episode start, or a fresh reset if
+                    # no snapshot was captured (non-sim env) — task restarts.
+                    if has_snapshot:
+                        o = env.restore_state(episode_snapshot)
+                    else:
+                        o, _i = env.reset()
+                    f = env.render() if hasattr(env, "render") else None
+                    return o, f
+
+                # The full code of the attempt just executed — the only context
+                # carried into the regeneration (§9.3).
+                prev_attempt_code = "\n\n".join(code_blocks)
+
+                # Pause for the human. Finish ends the trial; only actual
+                # feedback resets the scene and re-attempts. An empty send is a
+                # no-op (keep waiting) — no turn timeout / auto restart.
+                new_blocks: list[str] = []
+                while True:
+                    action, fb_text = await _wait_for_human(reward)
+                    if action == "finish":
+                        human_finished = True
+                        break
+                    if action != "feedback":
+                        # Empty send / legacy reset with no text: nothing to
+                        # modify — re-pause and keep waiting.
+                        continue
+                    feedback_text = fb_text
+
+                    if not has_snapshot:
+                        logger.warning("No episode snapshot; falling back to env.reset()")
+                        await emit(ErrorEvent(
+                            session_id=session.session_id,
+                            message=(
+                                "No episode snapshot was available — restarting from a "
+                                "fresh reset instead of the exact episode start."
+                            ),
+                            recoverable=True,
+                        ))
+                    obs, reset_frame = await run_in_env_thread(_restore_and_render)
+
+                    # Regeneration context: task + previous attempt's full code +
+                    # the human's feedback (the only added context).
+                    gen_prompt = copy.deepcopy(clean_base_prompt)
+                    reset_note = (
+                        "The simulator has been reset to the start of this episode; "
+                        "none of the earlier steps persist. Your previous attempt's "
+                        "code was:\n```python\n"
+                        f"{prev_attempt_code}\n```"
+                    )
+                    gen_prompt.append({
+                        "role": "user",
+                        "content": [{"type": "text", "text": reset_note}],
+                    })
+                    if use_visual_feedback and reset_frame is not None:
+                        _img, _b64url = _encode_frame_png(reset_frame)
+                        gen_prompt[-1]["content"].append(
+                            {"type": "image_url", "image_url": {"url": _b64url}}
+                        )
+                        await emit(VisualFeedbackEvent(
+                            session_id=session.session_id,
+                            image_base64=_b64url,
+                            description="Environment reset",
+                        ))
+                    if feedback_text:
+                        logger.info(f"Human feedback: {feedback_text[:100]}...")
+                        gen_prompt.append({
+                            "role": "user",
+                            "content": [{"type": "text", "text": feedback_text}],
+                        })
+
+                    turn_number += 1
+                    raw_code, reasoning = await _stream_query(
+                        gen_prompt, ThinkingPhase.INITIAL, turn_number
+                    )
+                    new_blocks = _extract_code(raw_code) if raw_code else []
+                    await emit(ModelStreamingEndEvent(
+                        session_id=session.session_id,
+                        content=raw_code,
+                        reasoning=reasoning,
+                        code_blocks=new_blocks,
+                        decision=DecisionType.INITIAL,
+                    ))
+                    all_responses.append({
+                        "block_idx": [0],
+                        "code_blocks": new_blocks,
+                        "decision": "feedback_retry",
+                        "reasoning": reasoning if reasoning else "",
+                    })
+                    if new_blocks:
+                        break  # got code -> execute the fresh attempt
+                    await emit(ErrorEvent(
+                        session_id=session.session_id,
+                        message="The model produced no code. Add feedback and try again.",
+                        recoverable=True,
+                    ))
+
+                if human_finished:
+                    break  # exit execution loop
+
+                code_blocks = list(new_blocks)
+                code_block_metadata = [{"generation": 0, "regenerated": False}] * len(new_blocks)
+                code_block_idx = 0
+                session.total_code_blocks = len(code_blocks)
+                continue  # restart execution loop with the fresh attempt
+
+            # ====================================================================
+            # Multi-turn decision (headless/benchmark, model-driven; §9.6)
             # ====================================================================
             if multi_turn_prompt:
                 # Compute the executed and remaining code blocks
@@ -746,130 +883,9 @@ async def run_trial_async(
                 if not use_visual_feedback:
                     visual_feedback_base64 = None
 
-                # ----------------------------------------------------------------
-                # Turn handling — diverges by mode.
-                #
-                # Interactive (§9, simplified): reached only *after* a code block
-                # executed, so the human always reviews a fresh result. They either
-                # Finish (the sole success signal, §4.1) or send — and *any* send
-                # resets the scene to the episode start and regenerates a full fresh
-                # attempt from [task + previous code + feedback]. There is no
-                # incremental multi-turn and no separate Reset action; resetting
-                # every attempt also keeps the viser playback timeline clean (one
-                # episode per attempt).
-                #
-                # Headless/benchmark: unchanged — the model drives REGENERATE /
-                # FINISH itself with no human in the loop.
-                # ----------------------------------------------------------------
+                # Model decides REGENERATE / FINISH (interactive mode is handled
+                # earlier and never reaches here).
                 headless_finish = False
-
-                if session.await_user_input_each_turn:
-                    has_snapshot = episode_snapshot is not None and hasattr(env, "restore_state")
-
-                    def _restore_and_render():
-                        # Exact restore to the episode start, or a fresh reset if
-                        # no snapshot was captured (non-sim env) — task restarts.
-                        if has_snapshot:
-                            o = env.restore_state(episode_snapshot)
-                        else:
-                            o, _i = env.reset()
-                        f = env.render() if hasattr(env, "render") else None
-                        return o, f
-
-                    # Pause for the human. Finish ends the trial; only actual
-                    # feedback resets the scene and re-attempts. An empty send
-                    # is a no-op (keep waiting) — there is no turn timeout / auto
-                    # restart; we only ever modify this one trial via feedback.
-                    new_blocks: list[str] = []
-                    while True:
-                        action, fb_text = await _wait_for_human(reward)
-                        if action == "finish":
-                            human_finished = True
-                            break
-                        if action != "feedback":
-                            # Empty send / legacy reset with no text: nothing to
-                            # modify — re-pause and keep waiting.
-                            continue
-                        feedback_text = fb_text
-
-                        if not has_snapshot:
-                            logger.warning("No episode snapshot; falling back to env.reset()")
-                            await emit(ErrorEvent(
-                                session_id=session.session_id,
-                                message=(
-                                    "No episode snapshot was available — restarting from a "
-                                    "fresh reset instead of the exact episode start."
-                                ),
-                                recoverable=True,
-                            ))
-                        obs, reset_frame = await run_in_env_thread(_restore_and_render)
-
-                        # Regeneration context: task + previous attempt's code +
-                        # the human's feedback (the only added context).
-                        gen_prompt = copy.deepcopy(clean_base_prompt)
-                        reset_note = (
-                            "The simulator has been reset to the start of this episode; "
-                            "none of the earlier steps persist. Your previous attempt's "
-                            "code was:\n```python\n"
-                            f"{last_executed_code}\n```"
-                        )
-                        gen_prompt.append({
-                            "role": "user",
-                            "content": [{"type": "text", "text": reset_note}],
-                        })
-                        if use_visual_feedback and reset_frame is not None:
-                            _img, _b64url = _encode_frame_png(reset_frame)
-                            gen_prompt[-1]["content"].append(
-                                {"type": "image_url", "image_url": {"url": _b64url}}
-                            )
-                            await emit(VisualFeedbackEvent(
-                                session_id=session.session_id,
-                                image_base64=_b64url,
-                                description="Environment reset",
-                            ))
-                        if feedback_text:
-                            logger.info(f"Human feedback: {feedback_text[:100]}...")
-                            gen_prompt.append({
-                                "role": "user",
-                                "content": [{"type": "text", "text": feedback_text}],
-                            })
-
-                        turn_number += 1
-                        raw_code, reasoning = await _stream_query(
-                            gen_prompt, ThinkingPhase.INITIAL, turn_number
-                        )
-                        new_blocks = _extract_code(raw_code) if raw_code else []
-                        await emit(ModelStreamingEndEvent(
-                            session_id=session.session_id,
-                            content=raw_code,
-                            reasoning=reasoning,
-                            code_blocks=new_blocks,
-                            decision=DecisionType.INITIAL,
-                        ))
-                        all_responses.append({
-                            "block_idx": [0],
-                            "code_blocks": new_blocks,
-                            "decision": "feedback_retry",
-                            "reasoning": reasoning if reasoning else "",
-                        })
-                        if new_blocks:
-                            break  # got code -> execute the fresh attempt
-                        await emit(ErrorEvent(
-                            session_id=session.session_id,
-                            message="The model produced no code. Add feedback and try again.",
-                            recoverable=True,
-                        ))
-
-                    if human_finished:
-                        break  # exit execution loop
-
-                    code_blocks = list(new_blocks)
-                    code_block_metadata = [{"generation": 0, "regenerated": False}] * len(new_blocks)
-                    code_block_idx = 0
-                    session.total_code_blocks = len(code_blocks)
-                    continue  # restart execution loop with the fresh attempt
-
-                # Headless/benchmark: model decides REGENERATE / FINISH (unchanged).
                 turn_number += 1
                 multi_turn_decision_prompt = _build_multi_turn_decision_prompt(
                     {"full_prompt": clean_base_prompt},
@@ -990,6 +1006,21 @@ async def run_trial_async(
                 visual_feedback_imgs,
             )
             logger.info(f"Trial artifacts saved to: {code_path}")
+
+            # Save the viser playback as one .npz per attempt segment, in order
+            # (attempt_00.npz, attempt_01.npz, …) so each reset's trail stays
+            # browsable under outputs/ and is bound to this trial (§9.4).
+            for cand in (getattr(env, "low_level_env", None), env):
+                fh = getattr(cand, "frame_history", None) if cand is not None else None
+                if fh is None:
+                    continue
+                try:
+                    seg_dir = os.path.join(output_dir, f"trial_{trial:02d}", "viser_history")
+                    written = await asyncio.to_thread(fh.save_segments, seg_dir)
+                    logger.info(f"Saved {len(written)} viser attempt segment(s) to: {seg_dir}")
+                except Exception as exc:
+                    logger.warning(f"viser segment save failed: {exc}")
+                break
 
             # Save execution histories
             all_exec_histories = execution_logger.get_all_histories()

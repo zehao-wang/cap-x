@@ -481,6 +481,7 @@ class FrankaLiberoEnv(BaseEnv):
                 [[f, 0, 0.5 * self._render_width], [0, f, 0.5 * self._render_height], [0, 0, 1]]
             )
             obs[camera_name]["intrinsics"] = K
+            obs[camera_name]["fov"] = float(fovy * np.pi / 180.0)
 
             obs[camera_name]["images"] = {}
             if camera_name + "_image" in self._current_obs:
@@ -655,6 +656,7 @@ class FrankaLiberoEnv(BaseEnv):
                 k: {
                     "image": rbg_imgs[k],
                     "pose_xyz_wxyz": obs[k].get("pose") if k in obs else None,
+                    "fov": obs[k].get("fov") if k in obs else None,
                 }
                 for k in rbg_imgs
             }

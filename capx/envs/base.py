@@ -184,14 +184,15 @@ class BaseEnv(Env):
                 setattr(self, name, _copy.deepcopy(value))
             except Exception:
                 setattr(self, name, value)
-        # Mirror reset(): the viser frame-history records frames keyed by step,
-        # so going back to the episode start must reset that timeline too —
-        # otherwise stale frames pollute the slider and the restored step-0 frame
-        # lands on a non-monotonic timeline, leaving the live camera view wrong.
+        # An in-trial reset goes back to the episode start, but we keep the
+        # prior attempt browsable: start a NEW viser segment instead of wiping
+        # the timeline. Each segment is one attempt, selectable from the
+        # Attempt dropdown and saved separately under outputs/ (§9.4). A full
+        # new trial uses reset() -> frame_history.clear() to drop everything.
         frame_history = getattr(self, "frame_history", None)
         if frame_history is not None:
             try:
-                frame_history.clear()
+                frame_history.new_segment()
             except Exception:
                 pass
         if getattr(self, "viser_debug", False) and hasattr(self, "_update_viser_server"):

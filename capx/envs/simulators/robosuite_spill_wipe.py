@@ -231,6 +231,7 @@ class FrankaRobosuiteSpillWipeLowLevel(RobosuiteBaseEnv):
                 k: {
                     "image": rbg_imgs[k],
                     "pose_xyz_wxyz": obs[k].get("pose") if k in obs else None,
+                    "fov": obs[k].get("fov") if k in obs else None,
                 }
                 for k in rbg_imgs
             }

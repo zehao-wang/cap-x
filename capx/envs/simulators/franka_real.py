@@ -382,9 +382,19 @@ class FrankaRealLowLevel(BaseEnv):
                     pose_mat = obs[image_key]["pose_mat"]
                     pose_wxyz = vtf.SE3.from_matrix(pose_mat).rotation().wxyz
                     pose = np.concatenate([pose_mat[:3, 3], pose_wxyz])
+                # Derive the vertical FOV from the real camera intrinsics so
+                # the viser frustum matches it: fov = 2*atan(0.5*H / fy).
+                fov = None
+                K = obs[image_key].get("intrinsics")
+                img = rbg_imgs[image_key]
+                if K is not None and img is not None:
+                    fy = float(np.asarray(K)[1, 1])
+                    if fy > 0:
+                        fov = float(2.0 * np.arctan(0.5 * img.shape[0] / fy))
                 cameras_for_history[image_key] = {
                     "image": rbg_imgs[image_key],
                     "pose_xyz_wxyz": pose,
+                    "fov": fov,
                 }
             self.frame_history.record(
                 cameras_for_history,
