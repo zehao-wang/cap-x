@@ -44,6 +44,11 @@ from capx.utils.launch_utils import (
     _parse_multi_turn_decision,
     _save_trial_artifacts,
 )
+from capx.harnesses.prompt import (
+    clean_vdm_task_description,
+    get_vdm_task_description_from_env,
+    prepare_multiturn_console_text,
+)
 from capx.utils.video_utils import _encode_video_base64, _write_video
 
 # Use TYPE_CHECKING to avoid circular imports for type hints only
@@ -241,7 +246,10 @@ def _capture_initial_visual_feedback(
     initial_base64, initial_img = _get_visual_feedback(env)
     visual_feedback_imgs.append(initial_img)
     visual_feedback_base64_history.append(initial_base64)
-    task_description = copy.deepcopy(obs["full_prompt"][-1]["content"][0]["text"])
+    task_description = get_vdm_task_description_from_env(
+        env,
+        obs["full_prompt"][-1]["content"][0]["text"],
+    )
 
     # Also capture wrist camera image for multiview initial description
     initial_wrist_base64 = None
@@ -297,6 +305,7 @@ def _describe_initial_scene(
     wrist_image_base64: str | None = None,
 ) -> str:
     """Query a VLM to describe the initial environment state."""
+    task_description = clean_vdm_task_description(task_description)
     user_content: list[dict[str, Any]] = [
         {"type": "text", "text": task_description},
         {
@@ -344,6 +353,7 @@ def _get_visual_differencing_feedback(
     """
     if len(visual_feedback_base64_history) < 2:
         return None
+    task_description = clean_vdm_task_description(task_description)
 
     user_content: list[dict[str, Any]] = [
         {"type": "text", "text": task_description},
@@ -410,6 +420,7 @@ def _get_video_differencing_feedback(
     """
     if not turn_frames:
         return None
+    task_description = clean_vdm_task_description(task_description)
 
     video_base64 = _encode_video_base64(turn_frames)
 
@@ -539,10 +550,14 @@ def _handle_multi_turn_step(
     use_wrist = config.get("use_wrist_camera", False)
 
     executed_code = "\n".join(code_blocks[:code_block_idx])
+    console_text = prepare_multiturn_console_text(
+        info_step["stdout"],
+        info_step["stderr"],
+    )
     complete_multi_turn_prompt = multi_turn_prompt.format(
         executed_code=executed_code,
-        console_stdout=info_step["stdout"],
-        console_stderr=info_step["stderr"],
+        console_stdout=console_text.stdout,
+        console_stderr=console_text.stderr,
     )
 
     if info_step["stderr"] != "":

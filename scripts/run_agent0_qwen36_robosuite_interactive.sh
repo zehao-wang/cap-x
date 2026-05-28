@@ -16,15 +16,17 @@
 # through 8200 — you do NOT need to forward 8080 separately.
 
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 
 # ---------------------------------------------------------------------------
-# Output / cache paths (same conventions as the batch script).
+# Logs root. Everything this interactive run produces is unified under ONE
+# timestamped directory below logs/ (a symlink to durable scratch) — the
+# timestamped subdir + console tee are set up in the "Session log dir" block
+# just before launch. Override LOGS_ROOT to relocate; the model-cache paths
+# below are unrelated and keep their own defaults.
 # ---------------------------------------------------------------------------
-SCRATCH_ROOT="${SCRATCH_ROOT:-/leonardo_scratch/fast/EUHPC_D33_222}"
-LOG_DIR="${LOG_DIR:-$SCRATCH_ROOT/cap-x/logs}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRATCH_ROOT/cap-x/outputs}"
-mkdir -p "$LOG_DIR" "$OUTPUT_ROOT"
+LOGS_ROOT="${LOGS_ROOT:-$REPO_ROOT/logs}"
 
 # Model-cache root — the ONE knob for where the models are read from: SAM3 +
 # Molmo via HF_HOME, robot URDFs via robot_descriptions. Defaults to scratch.
@@ -80,7 +82,40 @@ if [[ ! -f "$CONFIG" ]]; then
     exit 1
 fi
 
+# Which backend families this launch exposes in the web-UI config dropdown.
+# The helper servers + MuJoCo/EGL env below are set up for MuJoCo/Franka, so we
+# only offer robosuite + LIBERO (both panda). The server further hides any whose
+# sim package isn't importable — so LIBERO stays hidden until it's installed,
+# and R1Pro (OmniGibson) / real-robot configs never show up here.
+export CAPX_CONFIG_FAMILIES="${CAPX_CONFIG_FAMILIES:-robosuite,libero}"
+
 WEB_UI_PORT="${WEB_UI_PORT:-8200}"
+
+# ---------------------------------------------------------------------------
+# Session log dir — ONE timestamped directory under logs/ holds this whole run:
+#   web_ui.log                          console of this script + the web-UI
+#                                       process (uvicorn + python logging +
+#                                       viser server + robosuite)
+#   {sam3,graspnet,pyroki,molmo}.log    helper-server stdout (only for servers
+#                                       this run actually starts; reused ones
+#                                       keep logging into their first session)
+#   trial_NN/                           per-trial artifacts the web UI writes:
+#                                       trace/, viser_history/*.npz,
+#                                       sam3_dumps/, molmo_dumps/, videos
+#                                       (routed here via --output-dir below)
+# The tee runs via process substitution so a foreground Ctrl-C can't sever
+# python's stdout mid-shutdown; the terminal still shows everything live.
+# ---------------------------------------------------------------------------
+SESSION_TAG="$(date +%Y%m%d_%H%M%S)"
+SESSION_DIR="$LOGS_ROOT/interactive_${SESSION_TAG}"
+mkdir -p "$SESSION_DIR"
+exec > >(tee "$SESSION_DIR/web_ui.log") 2>&1
+echo "Session log dir: $SESSION_DIR"
+# Fallback dump dirs: the web UI normally writes SAM3/Molmo dumps under each
+# trial's artifact dir (trial_NN/), so these env vars only apply if that is
+# unset (e.g. a headless reuse of this env).
+export CAPX_SAM3_DUMP_DIR="${CAPX_SAM3_DUMP_DIR:-$SESSION_DIR/sam3_dumps}"
+export CAPX_MOLMO_DUMP_DIR="${CAPX_MOLMO_DUMP_DIR:-$SESSION_DIR/molmo_dumps}"
 
 # ---------------------------------------------------------------------------
 # Locate the Qwen vLLM server (auto-detect from squeue, override via QWEN_HOST).
@@ -126,7 +161,7 @@ start_if_down() {
         echo "  $name (port $port): UP"
     else
         echo "  $name (port $port): starting..."
-        nohup "$@" > "$LOG_DIR/${name}.log" 2>&1 &
+        nohup "$@" > "$SESSION_DIR/${name}.log" 2>&1 &
     fi
 }
 
@@ -159,15 +194,6 @@ for p in 8114 8115 8116 8122; do
 done
 
 # ---------------------------------------------------------------------------
-# Output dump dirs (overlay PNGs + meta JSON for post-hoc inspection).
-# ---------------------------------------------------------------------------
-SESSION_TAG="$(date +%Y%m%d_%H%M%S)"
-OUTPUT_DIR="$OUTPUT_ROOT/agent0_qwen36_robosuite_interactive_${SESSION_TAG}"
-mkdir -p "$OUTPUT_DIR"
-export CAPX_SAM3_DUMP_DIR="${CAPX_SAM3_DUMP_DIR:-$OUTPUT_DIR/sam3_dumps}"
-export CAPX_MOLMO_DUMP_DIR="${CAPX_MOLMO_DUMP_DIR:-$OUTPUT_DIR/molmo_dumps}"
-
-# ---------------------------------------------------------------------------
 # Print the local-machine port-forward hint, then launch the web UI.
 # ---------------------------------------------------------------------------
 THIS_HOST="$(hostname -s)"
@@ -177,7 +203,7 @@ cat <<EOF
   Launching CaP-X interactive web UI
     config:  $CONFIG
     model:   $QWEN_MODEL  via  $SERVER_URL
-    output:  $OUTPUT_DIR
+    logs:    $SESSION_DIR  (web_ui.log + helper logs + trial_NN/ artifacts)
     bind:    0.0.0.0:$WEB_UI_PORT  (on $THIS_HOST)
 
   >>> ON YOUR LOCAL MACHINE, OPEN A SEPARATE TERMINAL AND RUN: <<<
@@ -207,6 +233,6 @@ MUJOCO_EGL_DEVICE_ID=3 MUJOCO_GL=egl TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
         --reasoning-effort medium \
         --visual-differencing-model "$QWEN_MODEL" \
         --visual-differencing-model-server-url "$SERVER_URL" \
-        --output-dir "$OUTPUT_DIR" \
+        --output-dir "$SESSION_DIR" \
         --web-ui True \
         --web-ui-port "$WEB_UI_PORT"

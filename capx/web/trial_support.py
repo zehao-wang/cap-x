@@ -15,6 +15,8 @@ from typing import Any
 
 from PIL import Image
 
+from capx.harnesses.prompt import clean_vdm_task_description, prepare_vdm_console_text
+
 
 @dataclass
 class LaunchArgsCompat:
@@ -68,6 +70,7 @@ def merge_consecutive_messages(messages: list[dict]) -> list[dict]:
 
 def build_initial_state_prompt(task_description: str, image_b64: str) -> list[dict]:
     """VDM prompt asking for a task-relevant description of the initial state."""
+    task_description = clean_vdm_task_description(task_description)
     instruction = (
         "Describe the initial state of the environment with the goal of the task "
         "in mind. Do *NOT* write any code. Provide ONLY task-relevant information."
@@ -106,6 +109,7 @@ def build_state_diff_prompt(
     reported. It is framed as the agent's own report (possibly imperfect), not
     ground truth.
     """
+    task_description = clean_vdm_task_description(task_description)
     instruction = (
         "Describe the difference between the current state of the environment and "
         "the previous state of the environment with the goal of the task in mind "
@@ -115,6 +119,7 @@ def build_state_diff_prompt(
         {"type": "text", "text": task_description},
         {"type": "text", "text": instruction},
     ]
+    console_output = prepare_vdm_console_text(console_output)
     if console_output and console_output.strip():
         content.append({
             "type": "text",

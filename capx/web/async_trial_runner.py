@@ -25,6 +25,10 @@ from capx.utils.launch_utils import (
     _parse_multi_turn_decision,
     _save_trial_artifacts,
 )
+from capx.harnesses.prompt import (
+    get_vdm_task_description_from_env,
+    prepare_multiturn_console_text,
+)
 from capx.utils.video_utils import _write_video
 from capx.web.models import (
     CodeExecutionResultEvent,
@@ -299,11 +303,12 @@ async def run_trial_async(
                 {"type": "image_url", "image_url": {"url": initial_visual_feedback_base64}}
             )
 
-        # Handle image differencing for initial state
-        # Use task_only_prompt if provided, otherwise extract from the full prompt
-        # (matches launch.py behaviour which deep-copies the prompt text)
-        task_description = task_only_prompt or copy.deepcopy(
-            obs["full_prompt"][-1]["content"][0]["text"]
+        # Handle image differencing for initial state. Keep the VDM context
+        # task-scoped: no code-generation rules or API reference.
+        task_description = get_vdm_task_description_from_env(
+            env,
+            obs["full_prompt"][-1]["content"][0]["text"],
+            task_only_prompt=task_only_prompt,
         )
         if use_img_differencing and initial_visual_feedback_base64:
 
@@ -839,10 +844,14 @@ async def run_trial_async(
                 errored = info_step.get("sandbox_rc", 0) != 0
 
                 # Build multi-turn prompt
+                console_text = prepare_multiturn_console_text(
+                    info_step["stdout"],
+                    info_step["stderr"],
+                )
                 complete_multi_turn_prompt = multi_turn_prompt.format(
                     executed_code=executed_code,
-                    console_stdout=info_step["stdout"],
-                    console_stderr=info_step["stderr"],
+                    console_stdout=console_text.stdout,
+                    console_stderr=console_text.stderr,
                 )
 
                 # Build visual feedback from the frame captured in the step thread

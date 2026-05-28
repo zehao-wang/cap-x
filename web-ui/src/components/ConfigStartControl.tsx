@@ -1,23 +1,9 @@
-import { useState, useEffect, useMemo } from 'react';
-import type { SessionState, StartTrialRequest } from '../types/messages';
+import { useState, useEffect } from 'react';
+import type { ConfigGroup, SessionState, StartTrialRequest } from '../types/messages';
 
-/** Group configs by their parent directory for a cleaner dropdown. */
-function groupConfigs(configs: string[]): Map<string, string[]> {
-  const groups = new Map<string, string[]>();
-  for (const config of configs) {
-    const parts = config.split('/');
-    const category = parts.length >= 3 ? parts[1] : 'other';
-    if (!groups.has(category)) groups.set(category, []);
-    groups.get(category)!.push(config);
-  }
-  return groups;
-}
-
-/** Human-readable category label. */
-function categoryLabel(key: string): string {
-  return key
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+/** Short filename label for an option (drop dir + .yaml). */
+function configLabel(path: string): string {
+  return path.split('/').pop()?.replace('.yaml', '') ?? path;
 }
 
 interface ConfigStartControlProps {
@@ -51,11 +37,9 @@ export function ConfigStartControl({
   temperature,
   awaitUserInput,
 }: ConfigStartControlProps) {
-  const [configs, setConfigs] = useState<string[]>([]);
+  const [groups, setGroups] = useState<ConfigGroup[]>([]);
   const [selectedConfig, setSelectedConfig] = useState<string>('');
   const [loading, setLoading] = useState(false);
-
-  const grouped = useMemo(() => groupConfigs(configs), [configs]);
 
   const isRunning = state === 'running' || state === 'awaiting_user_input';
   const canStart = state === 'idle' || state === 'complete' || state === 'error';
@@ -64,7 +48,15 @@ export function ConfigStartControl({
     fetch('/api/configs')
       .then((res) => res.json())
       .then((data) => {
-        setConfigs(data.configs || []);
+        // Prefer the family-grouped shape; fall back to a flat list for older
+        // backends that only return `configs`.
+        if (Array.isArray(data.groups) && data.groups.length > 0) {
+          setGroups(data.groups);
+        } else if (Array.isArray(data.configs)) {
+          setGroups([
+            { family: 'all', label: 'Configs', available: true, configs: data.configs },
+          ]);
+        }
       })
       .catch((err) => console.error('Failed to fetch configs:', err));
   }, []);
@@ -117,11 +109,14 @@ export function ConfigStartControl({
           className="appearance-none pl-3 pr-8 py-1.5 bg-surface-sunken border border-surface-border rounded-md text-sm text-text-primary min-w-0 sm:min-w-[280px] w-full sm:w-auto focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent disabled:opacity-50 transition-colors cursor-pointer"
         >
           <option value="">Select a config...</option>
-          {[...grouped.entries()].map(([category, paths]) => (
-            <optgroup key={category} label={categoryLabel(category)}>
-              {paths.map((config) => (
-                <option key={config} value={config}>
-                  {config.split('/').pop()?.replace('.yaml', '')}
+          {groups.map((group) => (
+            <optgroup
+              key={group.family}
+              label={group.available ? group.label : `${group.label} — ${group.reason ?? 'unavailable'}`}
+            >
+              {group.configs.map((config) => (
+                <option key={config} value={config} disabled={!group.available}>
+                  {configLabel(config)}
                 </option>
               ))}
             </optgroup>

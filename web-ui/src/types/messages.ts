@@ -193,8 +193,17 @@ export type WSCommand =
 // REST API Types
 // ============================================================================
 
+export interface ConfigGroup {
+  family: string;
+  label: string;
+  available: boolean;
+  reason?: string | null;
+  configs: string[];
+}
+
 export interface ConfigListResponse {
   configs: string[];
+  groups?: ConfigGroup[];
 }
 
 export interface LoadConfigRequest {
@@ -224,6 +233,55 @@ export interface StartTrialRequest {
 export interface StartTrialResponse {
   session_id: string;
   status: string;
+}
+
+// ============================================================================
+// LLM Trace Types
+// ============================================================================
+
+export type LlmTraceContentPart =
+  | {
+      type: 'text';
+      text?: string;
+      [key: string]: unknown;
+    }
+  | {
+      type: 'image_url';
+      image_ref?: string;
+      elided_chars?: number;
+      [key: string]: unknown;
+    }
+  | Record<string, unknown>;
+
+export interface LlmTraceMessage {
+  role: string;
+  content: string | LlmTraceContentPart[] | null;
+}
+
+export interface LlmTraceRecord {
+  _line?: number;
+  parse_error?: string;
+  raw?: string;
+  seq?: number;
+  llm_call?: number;
+  ts?: string;
+  phase?: string;
+  turn?: number;
+  model?: string | null;
+  duration_s?: number | null;
+  input_messages?: LlmTraceMessage[];
+  output?: {
+    content?: string | null;
+    reasoning?: string | null;
+  };
+  decision?: string | null;
+  code_blocks?: string[] | null;
+}
+
+export interface LlmTraceResponse {
+  records: LlmTraceRecord[];
+  path: string | null;
+  exists: boolean;
 }
 
 // ============================================================================

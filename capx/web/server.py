@@ -22,6 +22,7 @@ from capx.envs.configs.instantiate import instantiate
 from capx.utils.launch_utils import _load_config
 from capx.web.async_trial_runner import LaunchArgsCompat, run_trial_async
 from capx.web.models import (
+    ConfigGroup,
     ConfigListResponse,
     InjectPromptCommand,
     LoadConfigRequest,
@@ -65,6 +66,83 @@ def _find_viser_port() -> int | None:
         except Exception:
             continue
     return None
+
+
+# ---------------------------------------------------------------------------
+# Config dropdown: backend-family grouping + per-launch availability
+# ---------------------------------------------------------------------------
+# env_configs/ mixes several backends (robosuite / LIBERO / R1Pro-BEHAVIOR-1K /
+# real Franka). A single interactive launch can only actually run the families
+# whose sim deps are importable here (and, for real hardware, only when opted
+# in). We group the dropdown by family and mark unrunnable families disabled so
+# the user sees *why* a family is greyed out instead of it silently vanishing.
+
+# Ordered (family, label) — controls dropdown order; only non-empty groups show.
+_CONFIG_FAMILIES: list[tuple[str, str]] = [
+    ("robosuite", "Robosuite"),
+    ("libero", "LIBERO"),
+    ("r1pro", "R1Pro (BEHAVIOR-1K)"),
+    ("real", "Real robot"),
+    ("other", "Other"),
+]
+
+
+def _config_family(yaml_path: Path) -> str:
+    """Classify a config by backend from its YAML text (priority-ordered).
+
+    Markers are matched in priority order because some configs name more than
+    one backend (e.g. a real-robot config reuses a robosuite *task* env class
+    but a ``franka_real`` low-level sim). Cheap text scan — no YAML parse, no
+    imports, no instantiate.
+    """
+    try:
+        text = yaml_path.read_text(errors="ignore").lower()
+    except OSError:
+        return "other"
+    if "r1pro" in text:
+        return "r1pro"
+    if "franka_real" in text:
+        return "real"
+    if "libero" in text:
+        return "libero"
+    if "robosuite" in text:
+        return "robosuite"
+    return "other"
+
+
+def _family_availability(family: str) -> tuple[bool, str | None]:
+    """Whether *this* launch can run ``family``, plus a reason when it cannot.
+
+    Availability = sim package importable (robosuite/LIBERO/OmniGibson) or, for
+    real hardware, an explicit ``CAPX_ENABLE_REAL=1`` opt-in. An optional
+    ``CAPX_CONFIG_FAMILIES`` allowlist (comma-separated) further narrows what a
+    given launch script exposes — it can only hide, never reveal an uninstalled
+    backend.
+    """
+    import importlib.util
+
+    def installed(mod: str) -> bool:
+        return importlib.util.find_spec(mod) is not None
+
+    if family == "robosuite":
+        ok, reason = installed("robosuite"), "robosuite not installed in this venv"
+    elif family == "libero":
+        ok, reason = installed("libero"), "LIBERO not installed in this venv"
+    elif family == "r1pro":
+        ok, reason = installed("omnigibson"), "OmniGibson/Isaac not installed in this venv"
+    elif family == "real":
+        ok = os.environ.get("CAPX_ENABLE_REAL") == "1"
+        reason = "real-robot hardware (set CAPX_ENABLE_REAL=1 to enable)"
+    else:
+        ok, reason = True, None
+
+    override = os.environ.get("CAPX_CONFIG_FAMILIES")
+    if ok and override:
+        allow = {x.strip() for x in override.split(",") if x.strip()}
+        if family not in allow:
+            ok, reason = False, "disabled for this launch (CAPX_CONFIG_FAMILIES)"
+
+    return ok, (None if ok else reason)
 
 
 def create_app() -> FastAPI:
@@ -113,20 +191,44 @@ def create_app() -> FastAPI:
 
     @app.get("/api/configs", response_model=ConfigListResponse)
     async def list_configs():
-        """List available YAML config files from all environment directories."""
+        """List YAML configs grouped by backend family + runnability here.
+
+        Buckets every ``env_configs/**.yaml`` (minus hillclimb) by backend, then
+        emits one group per family marking whether this launch can actually run
+        it. ``configs`` (flat) holds only the runnable ones for older clients.
+        """
         configs_root = Path("env_configs")
         if not configs_root.exists():
-            return ConfigListResponse(configs=[])
+            return ConfigListResponse(configs=[], groups=[])
 
-        configs = []
+        buckets: dict[str, list[str]] = {}
         for yaml_file in configs_root.rglob("*.yaml"):
             # Skip hillclimb subdirectories (internal experiment configs)
             if "hillclimb" in yaml_file.parts:
                 continue
-            configs.append(str(yaml_file.relative_to(".")))
+            family = _config_family(yaml_file)
+            buckets.setdefault(family, []).append(str(yaml_file.relative_to(".")))
 
-        configs.sort()
-        return ConfigListResponse(configs=configs)
+        groups: list[ConfigGroup] = []
+        flat: list[str] = []
+        for family, label in _CONFIG_FAMILIES:
+            paths = sorted(buckets.get(family, []))
+            if not paths:
+                continue
+            available, reason = _family_availability(family)
+            groups.append(
+                ConfigGroup(
+                    family=family,
+                    label=label,
+                    available=available,
+                    reason=reason,
+                    configs=paths,
+                )
+            )
+            if available:
+                flat.extend(paths)
+
+        return ConfigListResponse(configs=sorted(flat), groups=groups)
 
     @app.post("/api/load-config", response_model=LoadConfigResponse)
     async def load_config(request: LoadConfigRequest):
@@ -241,8 +343,20 @@ def create_app() -> FastAPI:
             )
             env_factory, config, _ = await asyncio.to_thread(_load_config, load_args)
 
-            # Process output_dir like launch.py does - add model name to path and create directory
-            if config.get("output_dir"):
+            # Resolve where this trial's artifacts (trace, viser playback,
+            # SAM3/Molmo dumps, videos) are written. When launched via the
+            # interactive script, --output-dir is forwarded as
+            # app.state.default_output_dir — a per-session logs/ dir that is
+            # already unique, so use it directly: artifacts land in
+            # <session>/trial_NN. Standalone/dev launches with no such dir fall
+            # back to the YAML output_dir + a model/timestamp subdir so repeated
+            # runs don't collide.
+            launch_output_dir = getattr(app.state, "default_output_dir", None)
+            if launch_output_dir:
+                Path(launch_output_dir).mkdir(parents=True, exist_ok=True)
+                config["output_dir"] = launch_output_dir
+                logger.info(f"Output directory (from launch --output-dir): {launch_output_dir}")
+            elif config.get("output_dir"):
                 from datetime import datetime
                 # Add model name and timestamp to output path
                 base_dir = config["output_dir"]
@@ -355,6 +469,47 @@ def create_app() -> FastAPI:
                 "config_path": session.config_path,
             }
         return {"session_id": None}
+
+    @app.get("/api/session/{session_id}/llm-trace")
+    async def get_llm_trace(session_id: str):
+        """Return the current trial's LLM trace records for UI browsing."""
+        manager = get_session_manager()
+        session = await manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        output_dir = session.config.get("output_dir")
+        if not output_dir:
+            return {"records": [], "path": None, "exists": False}
+
+        root = Path(output_dir)
+        candidates = sorted(root.glob("trial_*/llm_trace.jsonl"))
+        trace_path = candidates[-1] if candidates else root / "trial_01" / "llm_trace.jsonl"
+        if not trace_path.exists():
+            return {"records": [], "path": str(trace_path), "exists": False}
+
+        records: list[dict[str, Any]] = []
+        try:
+            with trace_path.open("r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        if isinstance(rec, dict):
+                            rec["_line"] = line_no
+                            records.append(rec)
+                    except json.JSONDecodeError as exc:
+                        records.append({
+                            "_line": line_no,
+                            "parse_error": str(exc),
+                            "raw": line[:2000],
+                        })
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return {"records": records, "path": str(trace_path), "exists": True}
 
     # ========================================================================
     # WebSocket Endpoint

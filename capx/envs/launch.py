@@ -202,6 +202,11 @@ def _run_web_ui(args: LaunchArgs, config: dict[str, Any]) -> None:
     app.state.default_visual_differencing_model_server_url = (
         args.visual_differencing_model_server_url
     )
+    # When launched with --output-dir (the interactive script passes a unified
+    # per-session logs/ dir), make it authoritative for every trial started from
+    # the browser. Without this the web request re-loads the config with no
+    # output_dir and trials fall back to the YAML's ./outputs/... path.
+    app.state.default_output_dir = args.output_dir
     print(f"\n  CaP-X Interactive Web UI: http://localhost:{port}\n")
 
     # A trial drives env.step() and the LLM stream on non-daemon worker threads

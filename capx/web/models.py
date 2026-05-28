@@ -229,10 +229,30 @@ class ResumeCommand(WSCommandBase):
 # ============================================================================
 
 
+class ConfigGroup(BaseModel):
+    """One backend family's configs in the dropdown.
+
+    ``available`` is False when this launch cannot actually run the family
+    (sim package not installed, or hardware-gated); ``reason`` explains why so
+    the UI can show it disabled rather than silently dropping it.
+    """
+
+    family: str
+    label: str
+    available: bool
+    reason: str | None = None
+    configs: list[str]
+
+
 class ConfigListResponse(BaseModel):
-    """Response for listing available configs."""
+    """Response for listing available configs.
+
+    ``configs`` is the flat list of runnable configs (kept for older clients);
+    ``groups`` carries the per-family grouping + availability for the dropdown.
+    """
 
     configs: list[str]
+    groups: list[ConfigGroup] = []
 
 
 class LoadConfigRequest(BaseModel):

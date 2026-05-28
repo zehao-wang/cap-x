@@ -305,7 +305,15 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     response = _post_with_retry(server_url, headers, payload)
     end_time = time.time()
     print(f"Time taken to query model: {end_time - start_time:.2f} seconds")
-    response.raise_for_status()
+    if not response.ok:
+        # vLLM/OpenAI servers put the actual reason (context-length overflow,
+        # bad image payload, etc.) in the body — surface it instead of the bare
+        # status line that raise_for_status() would give.
+        raise requests.exceptions.HTTPError(
+            f"{response.status_code} {response.reason} for url {server_url}: "
+            f"{response.text[:2000]}",
+            response=response,
+        )
     body = response.json()
     out = {}
     if args.debug:

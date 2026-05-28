@@ -3,6 +3,7 @@ import { useTrialState } from './hooks/useTrialState';
 import { ConfigStartControl } from './components/ConfigStartControl';
 import { ChatPanel } from './components/ChatPanel';
 import { VisualizationPanel } from './components/VisualizationPanel';
+import { LlmTracePanel } from './components/LlmTracePanel';
 
 const FALLBACK_CONFIG = 'env_configs/cube_stack/franka_robosuite_cube_stack.yaml';
 
@@ -38,6 +39,7 @@ function App() {
   const [executionTimeout, setExecutionTimeout] = useState(180);
   const [hasCheckedSession, setHasCheckedSession] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [leftTab, setLeftTab] = useState<'chat' | 'trace'>('chat');
 
   // Resizable panel
   const [splitPercent, setSplitPercent] = useState(60);
@@ -375,19 +377,47 @@ function App() {
         {/* Overlay to capture mouse during drag */}
         {isDragging && <div className="absolute inset-0 z-20" />}
 
-        {/* Left Panel - Chat */}
+        {/* Left Panel - Chat / LLM Trace */}
         <div
           className="flex flex-col bg-surface overflow-hidden"
           style={{ width: `${splitPercent}%` }}
         >
-          <ChatPanel
-            messages={trial.messages}
-            state={trial.state}
-            onSendMessage={trial.injectPrompt}
-            onResume={trial.resumeTrial}
-            onFinish={trial.requestFinish}
-            taskPrompt={trial.taskPrompt}
-          />
+          <div className="flex-shrink-0 bg-surface-raised border-b border-surface-border px-4 py-2">
+            <div className="inline-flex rounded-md bg-surface-sunken border border-surface-border p-0.5">
+              <button
+                onClick={() => setLeftTab('chat')}
+                className={`px-3 py-1.5 rounded text-xs font-display font-semibold transition-all ${
+                  leftTab === 'chat'
+                    ? 'bg-surface-overlay text-text-primary border border-surface-border-light'
+                    : 'text-text-tertiary hover:text-text-primary'
+                }`}
+              >
+                Chat
+              </button>
+              <button
+                onClick={() => setLeftTab('trace')}
+                className={`px-3 py-1.5 rounded text-xs font-display font-semibold transition-all ${
+                  leftTab === 'trace'
+                    ? 'bg-surface-overlay text-text-primary border border-surface-border-light'
+                    : 'text-text-tertiary hover:text-text-primary'
+                }`}
+              >
+                LLM Trace
+              </button>
+            </div>
+          </div>
+          {leftTab === 'chat' ? (
+            <ChatPanel
+              messages={trial.messages}
+              state={trial.state}
+              onSendMessage={trial.injectPrompt}
+              onResume={trial.resumeTrial}
+              onFinish={trial.requestFinish}
+              taskPrompt={trial.taskPrompt}
+            />
+          ) : (
+            <LlmTracePanel sessionId={trial.sessionId} state={trial.state} />
+          )}
         </div>
 
         {/* Draggable Divider */}
