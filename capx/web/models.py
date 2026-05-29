@@ -186,6 +186,21 @@ class StateUpdateEvent(WSEventBase):
     state: SessionState
 
 
+class ResetWizardEvent(WSEventBase):
+    """Drives the guided real-robot reset wizard (server -> client).
+
+    Each event represents the current step of the reset flow and which buttons
+    the modal should offer. The runner blocks on the user's response between
+    steps (see async_trial_runner._guided_real_robot_reset).
+    """
+
+    type: str = "reset_wizard"
+    step: str  # "connection" | "rest_pose" | "rearrange" | "complete"
+    message: str
+    actions: list[str] = Field(default_factory=list)  # "ready" | "confirm" | "reject"
+    busy: bool = False  # backend is checking connection / moving the arm
+
+
 class ErrorEvent(WSEventBase):
     """Emitted when an error occurs."""
 

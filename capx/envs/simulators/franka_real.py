@@ -32,6 +32,21 @@ import threading
 import time
 
 
+# Canonical rest (home) joint configuration for the Franka arm. The guided
+# real-robot reset returns the arm here before a new attempt.
+FRANKA_REST_JOINTS = np.array(
+    [
+        0.02560678,
+        -0.50020427,
+        -0.02167408,
+        -2.3739204,
+        -0.01089052,
+        1.8737985,
+        -2.3463573,
+    ]
+)
+
+
 class RepackObsAdapter:
     """
     Converts structured msgpack numpy dicts into an
@@ -117,17 +132,8 @@ class FrankaRealLowLevel(BaseEnv):
         self.obs: Dict[str, Any] = {}
         self.latest_action: Dict[str, Any] = {}
         # self._current_joints = np.zeros(7, dtype=np.float64)
-        self._current_joints = np.array(
-            [
-                0.02560678,
-                -0.50020427,
-                -0.02167408,
-                -2.3739204,
-                -0.01089052,
-                1.8737985,
-                -2.3463573,
-            ]
-        )
+        self._current_joints = FRANKA_REST_JOINTS.copy()
+        self._rest_pose = FRANKA_REST_JOINTS.copy()
         self._gripper_fraction = 1.0
         self._action_publish_period = 0.02
 
@@ -238,6 +244,26 @@ class FrankaRealLowLevel(BaseEnv):
             self._update_viser_server()
 
 
+
+    # ----------------------- Guided reset interface -----------------------
+    # These two methods mark this env as a real-robot backend (duck-typed by the
+    # interactive runner) and drive the guided reset wizard: a connection check
+    # against the live middleware, and an automatic return to the rest pose.
+
+    def is_connected(self, max_age: float = 2.0) -> bool:
+        """Whether the robot middleware is actively streaming observations.
+
+        We treat the arm as connected when the msgpack server received an
+        observation within the last ``max_age`` seconds. A stale / missing
+        timestamp means the middleware was never started or has stopped.
+        """
+        last = self.low_level_server.last_observation_time
+        return last is not None and (time.time() - last) < max_age
+
+    def return_to_rest_pose(self) -> None:
+        """Open the gripper and drive the arm back to the rest (home) pose."""
+        self._set_gripper(1.0)
+        self.move_to_joints_blocking(self._rest_pose)
 
     def _set_gripper(self, fraction: float) -> None:
         """Set gripper opening fraction.

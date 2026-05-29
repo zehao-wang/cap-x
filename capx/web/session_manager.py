@@ -28,6 +28,19 @@ logger = logging.getLogger(__name__)
 RESET_COMMAND = "\x00__CAPX_RESET__\x00"
 FINISH_COMMAND = "\x00__CAPX_FINISH__\x00"
 
+# Sentinels for the guided real-robot reset wizard, delivered on a dedicated
+# wizard_response_queue (separate from feedback). Mapped from the UI button ids
+# "ready" / "confirm" / "reject" by SessionManager.request_wizard_action.
+WIZARD_READY = "\x00__CAPX_WIZARD_READY__\x00"
+WIZARD_CONFIRM = "\x00__CAPX_WIZARD_CONFIRM__\x00"
+WIZARD_REJECT = "\x00__CAPX_WIZARD_REJECT__\x00"
+
+_WIZARD_ACTION_SENTINELS = {
+    "ready": WIZARD_READY,
+    "confirm": WIZARD_CONFIRM,
+    "reject": WIZARD_REJECT,
+}
+
 # Cap the replay buffer so an unbounded interactive session can't grow it
 # without limit. Heavy base64 image payloads are also stripped from the stored
 # copy (see Session._record_for_replay), so the bound is on event count, not bytes.
@@ -102,6 +115,9 @@ class Session:
     # Async coordination
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     user_injection_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
+    # Responses to the guided real-robot reset wizard (Ready / ✓ / ✗), kept
+    # separate from feedback so they never collide with typed user input.
+    wizard_response_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
     # Serializes all WebSocket sends for this session. Emits can be scheduled
     # concurrently onto the loop (e.g. execution-step callbacks fired from the
     # env worker thread via run_coroutine_threadsafe), and Starlette/uvicorn
@@ -200,6 +216,7 @@ class Session:
         self.state = SessionState.IDLE
         self.cancel_event = asyncio.Event()
         self.user_injection_queue = asyncio.Queue()
+        self.wizard_response_queue = asyncio.Queue()
         self.event_history = deque(maxlen=EVENT_HISTORY_MAXLEN)
         self.task = None
         self.env = None
@@ -371,6 +388,25 @@ class SessionManager:
         if session.state == SessionState.AWAITING_USER_INPUT:
             await session.user_injection_queue.put(FINISH_COMMAND)
             logger.info(f"Finish (human success) requested for session {session_id}")
+            return True
+        return False
+
+    async def request_wizard_action(self, session_id: str, action: str) -> bool:
+        """Deliver a guided-reset wizard button press (Ready / ✓ / ✗).
+
+        Honoured only while the session is awaiting user input (the wizard sets
+        that state between steps). Unknown actions are ignored.
+        """
+        sentinel = _WIZARD_ACTION_SENTINELS.get(action)
+        if sentinel is None:
+            logger.warning(f"Ignoring unknown wizard action {action!r}")
+            return False
+        session = await self.get_session(session_id)
+        if not session:
+            return False
+        if session.state == SessionState.AWAITING_USER_INPUT:
+            await session.wizard_response_queue.put(sentinel)
+            logger.info(f"Wizard action {action!r} for session {session_id}")
             return True
         return False
 

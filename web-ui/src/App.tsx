@@ -4,6 +4,7 @@ import { ConfigStartControl } from './components/ConfigStartControl';
 import { ChatPanel } from './components/ChatPanel';
 import { VisualizationPanel } from './components/VisualizationPanel';
 import { LlmTracePanel } from './components/LlmTracePanel';
+import { ResetWizardModal } from './components/ResetWizardModal';
 
 const FALLBACK_CONFIG = 'env_configs/cube_stack/franka_robosuite_cube_stack.yaml';
 
@@ -180,6 +181,9 @@ function App() {
 
   return (
     <div className="h-full flex flex-col bg-surface">
+      {/* Guided real-robot reset wizard (overlay; null when not resetting) */}
+      <ResetWizardModal wizard={trial.resetWizard} onAction={trial.sendWizardAction} />
+
       {/* Header */}
       <header className="flex-shrink-0 bg-surface-raised border-b border-surface-border header-glow">
         <div className="flex items-center h-16 px-6 gap-4">

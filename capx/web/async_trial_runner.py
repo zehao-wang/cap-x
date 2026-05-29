@@ -43,6 +43,7 @@ from capx.web.models import (
     ModelStreamingEndEvent,
     ModelStreamingStartEvent,
     ModelThinkingEvent,
+    ResetWizardEvent,
     SessionState,
     StateUpdateEvent,
     ThinkingPhase,
@@ -56,6 +57,9 @@ from capx.utils.trace_logger import NullTraceLogger, TraceLogger
 from capx.web.session_manager import (
     FINISH_COMMAND,
     RESET_COMMAND,
+    WIZARD_CONFIRM,
+    WIZARD_READY,
+    WIZARD_REJECT,
     Session,
     run_blocking_with_interrupt,
 )
@@ -165,6 +169,15 @@ async def run_trial_async(
             if robosuite_env is not None:
                 robosuite_env.ignore_done = True
 
+        # Real-robot backends expose a guided-reset capability (connection check
+        # + return-to-rest-pose). Detected by duck typing on the low-level env so
+        # the runner stays agnostic of the concrete hardware class. When set, the
+        # initial and feedback resets run the interactive wizard instead of a
+        # plain env.reset() (sim restore_state path is untouched).
+        is_real_robot = low_level_env is not None and hasattr(
+            low_level_env, "return_to_rest_pose"
+        )
+
         # Store env reference in session for safety interrupt
         session.env = env
 
@@ -178,12 +191,6 @@ async def run_trial_async(
         multi_turn_prompt = session.env_factory["cfg"].get("multi_turn_prompt", None)
         task_only_prompt = session.env_factory["cfg"].get("task_only_prompt", None)
 
-        # Reset environment
-        await emit(EnvironmentInitEvent(
-            session_id=session.session_id,
-            status="resetting",
-            message="Resetting environment...",
-        ))
         # Reset and capture initial frame in the same thread to avoid
         # MuJoCo OpenGL context issues (osmesa contexts are thread-local).
         def _reset_and_render():
@@ -191,7 +198,116 @@ async def run_trial_async(
             frame = env.render() if hasattr(env, "render") else None
             return obs, info, frame
 
-        obs, _, initial_frame = await run_in_env_thread(_reset_and_render)
+        # ====================================================================
+        # Guided real-robot reset wizard (real backends only). Blocks between
+        # steps on the human's button press, delivered via
+        # session.wizard_response_queue (Ready / ✓ / ✗). The sim path never
+        # calls these.
+        # ====================================================================
+        async def _wait_wizard() -> str:
+            """Pause for a wizard button press; return 'ready'/'confirm'/'reject'."""
+            # Drop any presses queued before this prompt (e.g. an impatient
+            # double-click on the previous step) so we never auto-advance.
+            while not session.wizard_response_queue.empty():
+                try:
+                    session.wizard_response_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            session.state = SessionState.AWAITING_USER_INPUT
+            await emit(StateUpdateEvent(
+                session_id=session.session_id,
+                state=SessionState.AWAITING_USER_INPUT,
+            ))
+            payload = await session.wizard_response_queue.get()
+            session.state = SessionState.RUNNING
+            await emit(StateUpdateEvent(
+                session_id=session.session_id, state=SessionState.RUNNING,
+            ))
+            if payload == WIZARD_READY:
+                return "ready"
+            if payload == WIZARD_REJECT:
+                return "reject"
+            return "confirm"
+
+        async def _emit_wizard(
+            step: str,
+            message: str,
+            actions: list[str] | None = None,
+            busy: bool = False,
+        ) -> None:
+            await emit(ResetWizardEvent(
+                session_id=session.session_id,
+                step=step,
+                message=message,
+                actions=actions or [],
+                busy=busy,
+            ))
+
+        async def _guided_real_robot_reset(label: str):
+            """Run the 3-step guided reset and return (obs, frame).
+
+            Step 1: loop until the arm middleware is connected (Ready re-checks).
+            Step 2: auto-home, then confirm rest pose (✗ re-homes, ✓ continues).
+            Step 3: confirm the environment has been rearranged.
+            """
+            logger.info(f"Starting guided real-robot reset ({label})")
+            # Step 1 — connection check loop
+            while True:
+                if is_cancelled():
+                    raise asyncio.CancelledError("Cancelled during reset wizard")
+                if await run_in_env_thread(low_level_env.is_connected):
+                    break
+                await _emit_wizard(
+                    "connection",
+                    "机械臂未连接。请重启机械臂服务/中间件，完成后点击 Ready。",
+                    actions=["ready"],
+                )
+                await _wait_wizard()
+                await _emit_wizard("connection", "正在检测机械臂连接…", busy=True)
+
+            # Step 2a — automatic return to rest pose
+            await _emit_wizard("rest_pose", "正在自动回到 rest pose…", busy=True)
+            await run_in_env_thread(low_level_env.return_to_rest_pose)
+
+            # Step 2b — confirm rest pose (✗ re-homes)
+            while True:
+                if is_cancelled():
+                    raise asyncio.CancelledError("Cancelled during reset wizard")
+                await _emit_wizard(
+                    "rest_pose",
+                    "机械臂是否已回到 rest pose？是 → ✓；否 → ✗（将再次自动回归）。",
+                    actions=["confirm", "reject"],
+                )
+                if await _wait_wizard() == "confirm":
+                    break
+                await _emit_wizard("rest_pose", "正在回到 rest pose…", busy=True)
+                await run_in_env_thread(low_level_env.return_to_rest_pose)
+
+            # Step 3 — confirm environment rearranged
+            await _emit_wizard(
+                "rearrange",
+                "请重新摆放环境，完成后点击 ✓。",
+                actions=["confirm"],
+            )
+            await _wait_wizard()
+
+            await _emit_wizard("complete", "真机 reset 完成。")
+            logger.info(f"Guided real-robot reset complete ({label})")
+
+            obs_out, _info, frame_out = await run_in_env_thread(_reset_and_render)
+            return obs_out, frame_out
+
+        # Reset environment
+        await emit(EnvironmentInitEvent(
+            session_id=session.session_id,
+            status="resetting",
+            message="Resetting environment...",
+        ))
+
+        if is_real_robot:
+            obs, initial_frame = await _guided_real_robot_reset("initial")
+        else:
+            obs, _, initial_frame = await run_in_env_thread(_reset_and_render)
         # Snapshot the episode-start state so a human-requested reset can send
         # the simulator back here without sampling a new episode (§9.1).
         episode_snapshot = (
@@ -602,17 +718,22 @@ async def run_trial_async(
                         continue  # empty send / legacy reset: keep waiting
                     feedback_text = fb_text
 
-                    if not has_snapshot:
-                        logger.warning("No episode snapshot; falling back to env.reset()")
-                        await emit(ErrorEvent(
-                            session_id=session.session_id,
-                            message=(
-                                "No episode snapshot was available — restarting from a "
-                                "fresh reset instead of the exact episode start."
-                            ),
-                            recoverable=True,
-                        ))
-                    obs, reset_frame = await run_in_env_thread(_restore_and_render)
+                    if is_real_robot:
+                        # Real hardware: run the guided 3-step reset wizard
+                        # (connection check -> auto-home + confirm -> rearrange).
+                        obs, reset_frame = await _guided_real_robot_reset("feedback")
+                    else:
+                        if not has_snapshot:
+                            logger.warning("No episode snapshot; falling back to env.reset()")
+                            await emit(ErrorEvent(
+                                session_id=session.session_id,
+                                message=(
+                                    "No episode snapshot was available — restarting from a "
+                                    "fresh reset instead of the exact episode start."
+                                ),
+                                recoverable=True,
+                            ))
+                        obs, reset_frame = await run_in_env_thread(_restore_and_render)
 
                     # Regeneration context = clean task base (KEEPS the API / tool
                     # docs) + previous attempt's full code + feedback. Only the

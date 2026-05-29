@@ -124,6 +124,19 @@ export interface StateUpdateEvent extends WSEventBase {
   state: SessionState;
 }
 
+// Guided real-robot reset wizard step (server -> client). Drives a modal that
+// blocks until the user presses the offered button(s).
+export type ResetWizardStep = 'connection' | 'rest_pose' | 'rearrange' | 'complete';
+export type ResetWizardAction = 'ready' | 'confirm' | 'reject';
+
+export interface ResetWizardEvent extends WSEventBase {
+  type: 'reset_wizard';
+  step: ResetWizardStep;
+  message: string;
+  actions: ResetWizardAction[];
+  busy: boolean;
+}
+
 export interface ErrorEvent extends WSEventBase {
   type: 'error';
   message: string;
@@ -145,6 +158,7 @@ export type WSEvent =
   | UserPromptRequestEvent
   | TrialCompleteEvent
   | StateUpdateEvent
+  | ResetWizardEvent
   | ErrorEvent;
 
 // ============================================================================
@@ -181,13 +195,20 @@ export interface UpdateSettingsCommand {
   await_user_input_each_turn?: boolean;
 }
 
+// Guided real-robot reset wizard button press. Only honoured while awaiting input.
+export interface ResetWizardActionCommand {
+  type: 'reset_wizard_action';
+  action: ResetWizardAction;
+}
+
 export type WSCommand =
   | InjectPromptCommand
   | StopCommand
   | ResumeCommand
   | ResetCommand
   | FinishCommand
-  | UpdateSettingsCommand;
+  | UpdateSettingsCommand
+  | ResetWizardActionCommand;
 
 // ============================================================================
 // REST API Types

@@ -566,6 +566,12 @@ def create_app() -> FastAPI:
                         logger.info(f"Finish command received for session {session_id}")
                         await manager.request_finish(session_id)
 
+                    elif msg_type == "reset_wizard_action":
+                        # Guided real-robot reset wizard button press
+                        await manager.request_wizard_action(
+                            session_id, message.get("action", "")
+                        )
+
                     elif msg_type == "update_settings":
                         # Update session settings dynamically during a trial
                         if "await_user_input_each_turn" in message:

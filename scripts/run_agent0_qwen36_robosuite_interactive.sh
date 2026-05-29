@@ -180,11 +180,14 @@ start_if_down 8122 molmo \
     bash scripts/serve_molmo_local.sh
 
 # These are GPU model servers (SAM3 / GraspNet / PyRoKi / vLLM-Molmo) that take
-# minutes to load — they will almost always still be DOWN at 30s. That is fine:
-# they keep loading in the background and just need to be UP before you start a
-# trial in the browser. The web UI itself does NOT wait for them.
-echo "Waiting 30s for helper servers (they load in the background)..."
-sleep 30
+# minutes to load — at a short wait they will almost always still be DOWN. That
+# is fine: they keep loading in the background and just need to be UP before you
+# start a trial in the browser. The web UI itself does NOT wait for them. The
+# wait below is purely so the status line below is informative; bump it via
+# HELPER_WAIT_SECS if you want a better chance of seeing them come UP here.
+HELPER_WAIT_SECS="${HELPER_WAIT_SECS:-60}"
+echo "Waiting ${HELPER_WAIT_SECS}s for helper servers (they load in the background)..."
+sleep "$HELPER_WAIT_SECS"
 for p in 8114 8115 8116 8122; do
     # -w prints the HTTP code; on a failed connection it prints "000". Don't add
     # a `|| echo 000` — that doubled the output to "000000" and falsely read UP.

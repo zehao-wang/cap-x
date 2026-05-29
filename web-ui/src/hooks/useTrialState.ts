@@ -5,6 +5,8 @@ import type {
   WSEvent,
   StartTrialRequest,
   LoadConfigResponse,
+  ResetWizardEvent,
+  ResetWizardAction,
 } from '../types/messages';
 import { useWebSocket } from './useWebSocket';
 
@@ -15,6 +17,8 @@ interface TrialState {
   configPath: string | null;
   taskPrompt: string | null;
   error: string | null;
+  // Current guided real-robot reset wizard step, or null when not in a wizard.
+  resetWizard: ResetWizardEvent | null;
 }
 
 interface ActiveSessionResponse {
@@ -32,6 +36,7 @@ interface UseTrialStateReturn extends TrialState {
   resumeTrial: () => void;
   requestReset: () => void;
   requestFinish: () => void;
+  sendWizardAction: (action: ResetWizardAction) => void;
   reset: () => void;
   fullReset: () => void;
   checkActiveSession: () => Promise<ActiveSessionResponse | null>;
@@ -52,6 +57,7 @@ export function useTrialState(): UseTrialStateReturn {
     configPath: null,
     taskPrompt: null,
     error: null,
+    resetWizard: null,
   });
 
   const addMessage = useCallback((message: Omit<ChatMessage, 'id'>) => {
@@ -80,7 +86,26 @@ export function useTrialState(): UseTrialStateReturn {
     (event: WSEvent) => {
       switch (event.type) {
         case 'state_update':
-          setTrialState((prev) => ({ ...prev, state: event.state }));
+          // Close the reset wizard if the trial leaves the active states
+          // (e.g. Stop pressed mid-wizard), so the modal can't get stuck open.
+          setTrialState((prev) => ({
+            ...prev,
+            state: event.state,
+            resetWizard:
+              event.state === 'idle' ||
+              event.state === 'complete' ||
+              event.state === 'error'
+                ? null
+                : prev.resetWizard,
+          }));
+          break;
+
+        case 'reset_wizard':
+          // Drive the guided real-robot reset modal. A "complete" step closes it.
+          setTrialState((prev) => ({
+            ...prev,
+            resetWizard: event.step === 'complete' ? null : event,
+          }));
           break;
 
         case 'environment_init':
@@ -487,6 +512,14 @@ export function useTrialState(): UseTrialStateReturn {
     send({ type: 'finish' });
   }, [send, addMessage]);
 
+  // Guided real-robot reset wizard button press (Ready / ✓ / ✗).
+  const sendWizardAction = useCallback(
+    (action: ResetWizardAction) => {
+      send({ type: 'reset_wizard_action', action });
+    },
+    [send]
+  );
+
   const updateSettings = useCallback(
     (settings: { await_user_input_each_turn?: boolean }) => {
       send({ type: 'update_settings', ...settings });
@@ -504,6 +537,7 @@ export function useTrialState(): UseTrialStateReturn {
       configPath: prev.configPath,
       taskPrompt: prev.taskPrompt,
       error: null,
+      resetWizard: null,
     }));
   }, [disconnect]);
 
@@ -516,6 +550,7 @@ export function useTrialState(): UseTrialStateReturn {
       configPath: null,
       taskPrompt: null,
       error: null,
+      resetWizard: null,
     });
   }, [disconnect]);
 
@@ -562,6 +597,7 @@ export function useTrialState(): UseTrialStateReturn {
     resumeTrial,
     requestReset,
     requestFinish,
+    sendWizardAction,
     updateSettings,
     reset,
     fullReset,

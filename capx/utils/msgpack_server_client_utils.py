@@ -2,6 +2,7 @@ import asyncio
 import msgpack
 import msgpack_numpy as m
 import struct
+import time
 from typing import Any, Dict, Optional
 
 m.patch()  # allow numpy arrays
@@ -35,6 +36,10 @@ class MsgpackNumpyServer:
         # Shared state with the robot loop
         self.latest_observation: Optional[Dict[str, Any]] = None
         self.latest_action: Dict[str, Any] = {}
+        # Wall-clock time of the most recent observation received from a client.
+        # Used as a liveness signal: a recent timestamp means the robot
+        # middleware is actively streaming (see FrankaRealLowLevel.is_connected).
+        self.last_observation_time: Optional[float] = None
 
     async def start(self):
         server = await asyncio.start_server(self.handle, self.host, self.port)
@@ -50,6 +55,7 @@ class MsgpackNumpyServer:
 
                 # Store latest observation from client
                 self.latest_observation = request
+                self.last_observation_time = time.time()
 
                 # Respond with latest action (to be filled by robot loop)
                 await send_framed(writer, self.latest_action)
