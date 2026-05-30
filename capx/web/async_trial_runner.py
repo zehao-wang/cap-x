@@ -15,7 +15,6 @@ from capx.llm.client import (
     VLM_MODELS,
     ModelQueryArgs,
     query_model as _query_model,
-    query_model_streaming as _query_model_streaming,
 )
 from capx.utils.launch_utils import (
     TrialSummary,
@@ -29,7 +28,6 @@ from capx.harnesses.prompt import (
     get_vdm_task_description_from_env,
     prepare_multiturn_console_text,
 )
-from capx.utils.video_utils import _write_video
 from capx.web.models import (
     CodeExecutionResultEvent,
     CodeExecutionStartEvent,
@@ -39,11 +37,8 @@ from capx.web.models import (
     ExecutionStepEvent,
     ImageAnalysisEvent,
     ModelResponseEvent,
-    ModelStreamingDeltaEvent,
     ModelStreamingEndEvent,
-    ModelStreamingStartEvent,
     ModelThinkingEvent,
-    ResetWizardEvent,
     SessionState,
     StateUpdateEvent,
     ThinkingPhase,
@@ -58,8 +53,6 @@ from capx.web.session_manager import (
     FINISH_COMMAND,
     RESET_COMMAND,
     WIZARD_CONFIRM,
-    WIZARD_READY,
-    WIZARD_REJECT,
     Session,
     run_blocking_with_interrupt,
 )
@@ -67,11 +60,12 @@ from capx.web.trial_support import (
     LaunchArgsCompat,
     build_feedback_distill_prompt,
     build_feedback_regeneration_block,
-    build_initial_state_prompt,
-    build_state_diff_prompt,
     encode_frame_png as _encode_frame_png,
-    merge_consecutive_messages as _merge_consecutive_messages,
 )
+from capx.web.model_stream import stream_query
+from capx.web.reset_wizard import GuidedResetWizard
+from capx.web.trial_artifacts import save_auxiliary_artifacts
+from capx.web import vdm_feedback
 
 logger = logging.getLogger(__name__)
 
@@ -200,104 +194,17 @@ async def run_trial_async(
             frame = env.render() if hasattr(env, "render") else None
             return obs, info, frame
 
-        # ====================================================================
-        # Guided real-robot reset wizard (real backends only). Blocks between
-        # steps on the human's button press, delivered via
-        # session.wizard_response_queue (Ready / ✓ / ✗). The sim path never
-        # calls these.
-        # ====================================================================
-        async def _wait_wizard() -> str:
-            """Pause for a wizard button press; return 'ready'/'confirm'/'reject'."""
-            # Drop any presses queued before this prompt (e.g. an impatient
-            # double-click on the previous step) so we never auto-advance.
-            while not session.wizard_response_queue.empty():
-                try:
-                    session.wizard_response_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-            session.state = SessionState.AWAITING_USER_INPUT
-            await emit(StateUpdateEvent(
-                session_id=session.session_id,
-                state=SessionState.AWAITING_USER_INPUT,
-            ))
-            payload = await session.wizard_response_queue.get()
-            session.state = SessionState.RUNNING
-            await emit(StateUpdateEvent(
-                session_id=session.session_id, state=SessionState.RUNNING,
-            ))
-            if payload == WIZARD_READY:
-                return "ready"
-            if payload == WIZARD_REJECT:
-                return "reject"
-            return "confirm"
-
-        async def _emit_wizard(
-            step: str,
-            message: str,
-            actions: list[str] | None = None,
-            busy: bool = False,
-        ) -> None:
-            await emit(ResetWizardEvent(
-                session_id=session.session_id,
-                step=step,
-                message=message,
-                actions=actions or [],
-                busy=busy,
-            ))
-
-        async def _guided_real_robot_reset(label: str):
-            """Run the 3-step guided reset and return (obs, frame).
-
-            Step 1: loop until the arm middleware is connected (Ready re-checks).
-            Step 2: auto-home, then confirm rest pose (✗ re-homes, ✓ continues).
-            Step 3: confirm the environment has been rearranged.
-            """
-            logger.info(f"Starting guided real-robot reset ({label})")
-            # Step 1 — connection check loop
-            while True:
-                if is_cancelled():
-                    raise asyncio.CancelledError("Cancelled during reset wizard")
-                if await run_in_env_thread(low_level_env.is_connected):
-                    break
-                await _emit_wizard(
-                    "connection",
-                    "机械臂未连接。请重启机械臂服务/中间件，完成后点击 Ready。",
-                    actions=["ready"],
-                )
-                await _wait_wizard()
-                await _emit_wizard("connection", "正在检测机械臂连接…", busy=True)
-
-            # Step 2a — automatic return to rest pose
-            await _emit_wizard("rest_pose", "正在自动回到 rest pose…", busy=True)
-            await run_in_env_thread(low_level_env.return_to_rest_pose)
-
-            # Step 2b — confirm rest pose (✗ re-homes)
-            while True:
-                if is_cancelled():
-                    raise asyncio.CancelledError("Cancelled during reset wizard")
-                await _emit_wizard(
-                    "rest_pose",
-                    "机械臂是否已回到 rest pose？是 → ✓；否 → ✗（将再次自动回归）。",
-                    actions=["confirm", "reject"],
-                )
-                if await _wait_wizard() == "confirm":
-                    break
-                await _emit_wizard("rest_pose", "正在回到 rest pose…", busy=True)
-                await run_in_env_thread(low_level_env.return_to_rest_pose)
-
-            # Step 3 — confirm environment rearranged
-            await _emit_wizard(
-                "rearrange",
-                "请重新摆放环境，完成后点击 ✓。",
-                actions=["confirm"],
-            )
-            await _wait_wizard()
-
-            await _emit_wizard("complete", "真机 reset 完成。")
-            logger.info(f"Guided real-robot reset complete ({label})")
-
-            obs_out, _info, frame_out = await run_in_env_thread(_reset_and_render)
-            return obs_out, frame_out
+        # Guided real-robot reset wizard (real backends only); the sim path
+        # never uses it. See capx.web.reset_wizard.GuidedResetWizard.
+        reset_wizard = GuidedResetWizard(
+            session=session,
+            emit=emit,
+            is_cancelled=is_cancelled,
+            run_in_env_thread=run_in_env_thread,
+            low_level_env=low_level_env,
+            reset_and_render=_reset_and_render,
+        )
+        _guided_real_robot_reset = reset_wizard.run
 
         # Reset environment
         await emit(EnvironmentInitEvent(
@@ -434,37 +341,18 @@ async def run_trial_async(
             task_only_prompt=task_only_prompt,
         )
         if use_img_differencing and initial_visual_feedback_base64:
-
-            await emit(EnvironmentInitEvent(
-                session_id=session.session_id,
-                status="building_description",
-                message="Building initial environment description...",
-            ))
-
-            initial_env_description_prompt = build_initial_state_prompt(
-                task_description, initial_visual_feedback_base64,
+            initial_env_description = await vdm_feedback.describe_initial_state(
+                task_description=task_description,
+                image_b64=initial_visual_feedback_base64,
+                vdm_args=visual_differencing_args,
+                session=session,
+                emit=emit,
+                trace=trace,
             )
-
-            initial_env_description_out = await asyncio.to_thread(
-                _query_model, visual_differencing_args, initial_env_description_prompt
+            obs["full_prompt"][-1]["content"][0]["text"] += (
+                "\n\nThe initial state of the environment is described as "
+                f"follows:\n{initial_env_description}"
             )
-            initial_env_description = initial_env_description_out["content"]
-            trace.log_llm(
-                phase="env_description",
-                turn=0,
-                input_messages=initial_env_description_prompt,
-                output_content=initial_env_description,
-                model=visual_differencing_args.model,
-            )
-            initial_visual_differencing_feedback = f"The initial state of the environment is described as follows:\n{initial_env_description}"
-            obs["full_prompt"][-1]["content"][0]["text"] += f"\n\n{initial_visual_differencing_feedback}"
-
-            await emit(EnvironmentInitEvent(
-                session_id=session.session_id,
-                status="description_complete",
-                message="Environment description ready",
-                description_content=initial_env_description,
-            ))
 
         # Display the prompt to the user before generation starts
         prompt_text = ""
@@ -485,88 +373,17 @@ async def run_trial_async(
         if is_cancelled():
             raise asyncio.CancelledError("Cancelled before initial code generation")
 
-        # ====================================================================
-        # Streaming helper — drives one model query end-to-end, emitting the
-        # streaming delta events and returning (content, reasoning). Shared by
-        # initial generation, the multi-turn decision, and reset re-planning so
-        # the streaming plumbing lives in exactly one place.
-        # ====================================================================
+        # Streaming helper — drives one model query end-to-end, emitting delta
+        # events and returning (content, reasoning). Thin adapter over
+        # capx.web.model_stream.stream_query that binds this trial's
+        # collaborators; shared by initial generation, the multi-turn decision,
+        # and feedback re-planning.
         async def _stream_query(prompt, phase, turn_no):
-            # Collapse any consecutive same-role messages (feedback / reset turns
-            # can create adjacent user messages) so role-alternating servers
-            # don't choke. See _merge_consecutive_messages.
-            prompt = _merge_consecutive_messages(prompt)
-            _t0 = time.time()
-            await emit(ModelStreamingStartEvent(
-                session_id=session.session_id,
-                phase=phase,
-                turn_number=turn_no,
-                model_name=args.model,
-            ))
-            q: asyncio.Queue = asyncio.Queue()
-            cap_loop = asyncio.get_running_loop()
-
-            def _pump():
-                gen = _query_model_streaming(args, prompt)
-                try:
-                    for chunk in gen:
-                        if is_cancelled():
-                            # Close the generator so its underlying streaming
-                            # HTTP connection is released now, instead of
-                            # leaking until the request timeout fires.
-                            gen.close()
-                            break
-                        asyncio.run_coroutine_threadsafe(q.put(chunk), cap_loop)
-                except Exception as e:  # surface as a queued error chunk
-                    asyncio.run_coroutine_threadsafe(
-                        q.put({"type": "error", "error": str(e)}), cap_loop
-                    )
-
-            pump_task = cap_loop.run_in_executor(None, _pump)
-            content = ""
-            reasoning_out = None
-            try:
-                while True:
-                    if is_cancelled():
-                        raise asyncio.CancelledError("Cancelled during model streaming")
-                    try:
-                        chunk = await asyncio.wait_for(q.get(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        if pump_task.done():
-                            break
-                        continue
-                    if chunk["type"] == "content_delta":
-                        await emit(ModelStreamingDeltaEvent(
-                            session_id=session.session_id, content_delta=chunk["content"],
-                        ))
-                    elif chunk["type"] == "reasoning_delta":
-                        await emit(ModelStreamingDeltaEvent(
-                            session_id=session.session_id, reasoning_delta=chunk["content"],
-                        ))
-                    elif chunk["type"] == "done":
-                        content = chunk["content"]
-                        reasoning_out = chunk.get("reasoning")
-                        break
-                    elif chunk["type"] == "error":
-                        raise RuntimeError(f"Streaming error: {chunk['error']}")
-                await pump_task
-            finally:
-                # On cancel / error we stop waiting on the pump. The executor
-                # thread can't be force-killed, but the is_cancelled() check in
-                # _pump + gen.close() let it unwind on the next chunk and free
-                # the connection rather than leaking it.
-                if not pump_task.done():
-                    pump_task.cancel()
-            trace.log_llm(
-                phase=getattr(phase, "value", str(phase)),
-                turn=turn_no,
-                input_messages=prompt,
-                output_content=content,
-                output_reasoning=reasoning_out,
-                model=args.model,
-                duration_s=time.time() - _t0,
+            return await stream_query(
+                prompt, phase, turn_no,
+                args=args, session=session, emit=emit,
+                is_cancelled=is_cancelled, trace=trace,
             )
-            return content, reasoning_out
 
         # ====================================================================
         # Human-pause helper — between turns we surface the state and block for
@@ -1062,32 +879,17 @@ async def run_trial_async(
                 # small lift / height change).
                 visual_differencing_feedback = None
                 if use_img_differencing and not errored and len(visual_feedback_base64_history) >= 2:
-                    visual_differencing_prompt = build_state_diff_prompt(
-                        task_description,
-                        visual_feedback_base64_history[-2],
-                        visual_feedback_base64_history[-1],
+                    visual_differencing_feedback = await vdm_feedback.diff_states(
+                        task_description=task_description,
+                        prev_b64=visual_feedback_base64_history[-2],
+                        cur_b64=visual_feedback_base64_history[-1],
                         console_output=info_step.get("stdout"),
+                        vdm_args=visual_differencing_args,
+                        turn_number=turn_number,
+                        session=session,
+                        emit=emit,
+                        trace=trace,
                     )
-                    img_diff_response = await asyncio.to_thread(
-                        _query_model, visual_differencing_args, visual_differencing_prompt
-                    )
-                    visual_differencing_feedback = img_diff_response.get("content") if img_diff_response else None
-                    trace.log_llm(
-                        phase="img_differencing",
-                        turn=turn_number,
-                        input_messages=visual_differencing_prompt,
-                        output_content=visual_differencing_feedback,
-                        model=visual_differencing_args.model,
-                    )
-
-                    # Emit image analysis event for visualization
-                    if visual_differencing_feedback:
-                        await emit(ImageAnalysisEvent(
-                            session_id=session.session_id,
-                            analysis_type="state_comparison",
-                            content=visual_differencing_feedback,
-                            model_used=visual_differencing_args.model,
-                        ))
 
                 # Zero out visual feedback if not using it
                 if not use_visual_feedback:
@@ -1238,46 +1040,16 @@ async def run_trial_async(
             )
             logger.info(f"Trial artifacts saved to: {code_path}")
 
-            # Save the viser observations as one observations.npz per attempt,
-            # written into the SAME attempt_NN/ folder as that attempt's LLM
-            # trace (trial_NN/attempt_NN/observations.npz). Only the task config's
-            # standard views are recorded, so the saved cameras match what the
-            # agent observes — no duplicated views (§9.4).
-            for cand in (getattr(env, "low_level_env", None), env):
-                fh = getattr(cand, "frame_history", None) if cand is not None else None
-                if fh is None:
-                    continue
-                try:
-                    trial_dir = os.path.join(output_dir, f"trial_{trial:02d}")
-                    written = await asyncio.to_thread(fh.save_segments, trial_dir)
-                    logger.info(f"Saved {len(written)} attempt observation file(s) under: {trial_dir}")
-                except Exception as exc:
-                    logger.warning(f"viser segment save failed: {exc}")
-                break
-
-            # Save execution histories
-            all_exec_histories = execution_logger.get_all_histories()
-            if all_exec_histories:
-                from pathlib import Path
-                exec_history_dir = Path(output_dir) / "execution_history"
-                for history in all_exec_histories:
-                    await asyncio.to_thread(history.save_to_directory, exec_history_dir)
-                logger.info(f"Saved {len(all_exec_histories)} execution histories to: {exec_history_dir}")
-
-            # Save video if configured
-            if session.config.get("record_video") and hasattr(env, "get_video_frames"):
-                frames = env.get_video_frames(clear=True)
-                if frames:
-                    video_dir = os.path.join(
-                        output_dir,
-                        f"trial_{trial:02d}_sandboxrc_{info_step['sandbox_rc']}_reward_{reward:.3f}_taskcompleted_{int(info_step.get('task_completed', False))}",
-                    )
-                    await asyncio.to_thread(
-                        _write_video,
-                        frames,
-                        video_dir,
-                        suffix=f"{reward:.3f}",
-                    )
+            # Auxiliary saves that hang off the live env: per-attempt viser
+            # observations, execution-step histories, and the recorded video.
+            await save_auxiliary_artifacts(
+                env=env,
+                output_dir=output_dir,
+                trial=trial,
+                info_step=info_step,
+                reward=reward,
+                record_video=bool(session.config.get("record_video")),
+            )
         else:
             logger.info("No output_dir configured, skipping artifact save")
 
