@@ -1,20 +1,142 @@
 # 长期目标 / Long-term Goals
 
-记录"暂时不做、但将来可能需要做"的事项。每条注明背景、现状、触发条件、范围，做完后移除或标记。
+> 本文件是 **self-evolve agent 的完整期待 + 进度总账**：记录我们要做成什么、当前到哪了、
+> 接下来分哪些模块推进。设计真相在 `docs-se/`（本文件只做"任务分解 + 状态"，不重复设计细节）。
+>
+> **怎么用**（配合 `AGENT.md`）：
+> 1. 读本文件 → 看「Pipeline 状态」挑出本次要推进的模块；
+> 2. 把该模块拆成可执行步骤写进 `Short-Term-GOAL.md`（临时 memory）；
+> 3. 分模块 coding；该模块做完 → 在本文件对应行标 ✅、清空 `Short-Term-GOAL.md`。
+>
+> 设计阅读顺序：`docs-se/README.md` → `concepts.md` + `storage.md`（术语 + 数据契约）→ 具体模块文档。
 
 ---
 
-## 1. 把 web runner 的 VDM / 错误处理改进同步到 headless benchmark
+## 0. 北极星 / Long-term vision
 
-- **背景**：在线 web runner（`capx/web/async_trial_runner.py`）已对模型自驱 multi-turn 决策做了两项改进：
-  1. VDM 视觉差分 prompt 附带 console stdout 做 grounding（`capx/web/trial_support.py:build_state_diff_prompt`）——单视角看不清"是否真的抬起"时，用代码自报的 stdout 互证。
-  2. 硬错误（`sandbox_rc != 0`，stderr 有 traceback）**跳过 VDM**、直接让模型按 traceback 修代码；且硬错误**绝不判 finish/success**（即使模型回 FINISH 也强制转 regenerate）。
-- **现状**：headless / 自动 benchmark 走的是另一套 `capx/envs/trial.py`（`_handle_multi_turn_step` 等），**暂未同步，保持原样**。
-- **触发条件**：web 端这两项改进在实跑中验证有效后，再镜像到 `trial.py`，让 benchmark 评测口径与在线一致。
-- **范围**：`capx/envs/trial.py` 的 multi-turn 决策路径 + `capx/utils/launch_utils.py` 的 VDM prompt 构造。
+来自 `docs-se/06-heartbeat-cron.md`：
 
-## 2.（task-setting 相关）多视角 VDM
+1. **提升 benchmark 上的效果**；
+2. **在人机交互的 task 上更快、更容易成功**。
 
-- **背景**：单一固定相机视角常看不清"是否真的抬起"这类细微变化，曾导致 VDM 误判。
-- **现状**：当前 cube_lifting 等任务**未启用** wrist/第二相机（config 无 `use_wrist_camera`，web runner 也只用单视角 before/after），因此**不做多视角**——这是 task setting 决定的。
-- **触发条件**：仅当某任务的 setting 本身提供 wrist/多相机时，才考虑把多视角喂给 VDM 增强判断；否则不适用。
+机制：把*人确认成功*的交互，经「通用化 → 蒸馏 → 候选 → benchmark 自动验证 → 人批准」闭环，
+固化成**可验证、需人批准、可终身更新**的长期能力。整体闭环图见 `docs-se/00-overview-diagram.md`。
+
+---
+
+## 1. 待实现系统（cap-x-se）的设计硬约束
+
+> 这些是 **cap-x-se agent 运行时必须满足**的流程/设计约束（用户拍板，易在实现中被忽略），
+> 不是对"在本仓库编辑/commit"的限制。细节见各模块文档。
+
+- **success signal 只能由人给**：VDM 不在 live loop 判成功；VDM 仅服务 Benchmark Evaluator 的自动评测。
+- **更新长期 library 走 Pull Request**：cap-x-se 与人在 manipulation task 交互后要更新 library 时，把改动
+  落成一个 PR（附报告）**等用户 merge**（而非弹聊天框）。Evaluator 不直接写长期库 / 不直接删 candidate；
+  **用户 merge = 批准、close = 否决**。
+- **遗弃不记 negative**：只按 `positive` 阈值固化；只对「久占 pool、从没被用、且无人引用」的候选遗弃。
+- **术语统一**：用 **atomic task library**（旧称 "subtask library" 已废弃）；atomic task 不绑具体物体/任务。
+- **路径**：长期库固化到 `capx/skill_library/`、`capx/atomic_task_library/`；**不**直接改 `capx/skills/library.py`；
+  pool 在仓库根 `mem/`。
+- **暂不做**：Memory Compact；rgbd video feedback 为未来。
+
+---
+
+## 2. Pipeline 状态总览
+
+| 阶段 | 文档 | 状态 | 落地位置 / 备注 |
+| --- | --- | --- | --- |
+| ① Live Loop（human-in-the-loop 主循环） | `01-interactive-loop.md` | ✅ | `capx/web/async_trial_runner.py` + `capx/envs/base.py` |
+| ② Visualization（viser 回放） | `02-visualization.md` | ✅ | `capx/utils/viser_history*.py`、`viser_playback_panel.py` |
+| ③ Feedback Postprocessor + Experience Distill | `03-feedback-postprocessor.md` | 🔲 | 写 `mem/history_pool/<id>.json` + `<id>.digest.md` |
+| ④ Update Planner | `04-update-planner.md` | 🔲 | 读 `history_pool` → 写 `mem/func_candidate_pool/` |
+| ⑤ Benchmark Evaluator | `05-benchmark-evaluator.md` | 🔲 | candidate →（批准后）→ 长期 library |
+| ⑥ Heartbeat / Cron | `06-heartbeat-cron.md` | 🔲 | 调度 daily task + 夜间触发 Evaluator |
+| ⓪ 共享存储脚手架（`mem/` schema + config） | `storage.md` / `config.md` | 🔲 | ③④⑤ 的公共前置，建议先做 |
+
+> ⚠️ 现状提醒：`mem/` 下还没有 `history_pool/` `func_candidate_pool/`；`capx/skill_library/`
+> `capx/atomic_task_library/` 两个模块尚不存在。代码里已有的 `feedback_distill` phase 是 live loop
+> 内折叠 operator guidance 的，**不是** module ③ 的 Experience Distill —— 两者别混淆。
+
+---
+
+## 3. 待实现任务分解（按依赖顺序）
+
+> 依赖链：⓪ → ③ → ④ → ⑤ → ⑥。每条标注 *读/写契约*、*交付物*、*关键约束*、*完成判据*。
+
+### ⓪ 共享存储脚手架（前置）
+
+- **为什么先做**：③④⑤ 都按 `storage.md` 的 schema 读写 `mem/`，先把数据契约落成代码可省去后续返工。
+- **交付物**：
+  - `mem/` 目录布局 + 读写辅助（`history_pool/`、`func_candidate_pool/`、`.processed_history` 游标）。
+  - success log schema / digest schema / candidate stats schema 的序列化与校验（schema 见 `storage.md`）。
+  - 一处集中的 config（`experience_distill.*` / `update_planner.*` / `benchmark_eval.*`，默认值见 `config.md`）。
+- **完成判据**：能用辅助函数读写三种 schema 的样例文件并通过校验；config 项可被各模块引用。
+
+### ③ Feedback Postprocessor + Experience Distill
+
+- **依赖**：① 产出的*人确认成功* trial；⓪ 的 history schema。
+- **读/写**：成功 trial → `mem/history_pool/<task>__<ts>.json`（通用化后的 `final_code` + 全文）
+  **和** `<task>__<ts>.digest.md`（蒸出的 sourced digest）。
+- **交付物**：
+  1. **Generalize-by-rewrite**：多轮 code rewrite 去掉对一次性 feedback 的直接依赖（如把硬编码
+     `z += 0.03` 升成 grasp atomic task config 的超参）；**rewrite 仍与环境实际交互**，**每轮只由人判对错**。
+  2. **Experience Distill**（定稿后、入 pool 前跑一次）：debugger 式问固定问题（KEY STRATEGY /
+     REUSABLE PATTERN / KEY HYPER-PARAMS+来历 / FRAGILITY），强制限长 `experience_distill.max_words`
+     （默认 200），每条论断带 `[#message_index]` 回溯标注。
+- **关键约束**：只有成功的 trial 进 pool；digest 是有损入口视图，真相在 `.json` 全文。
+- **完成判据**：一次人确认成功的 web trial 跑完后，`history_pool/` 落出成对的 `.json` + `.digest.md`，
+  digest 限长且每条带 `[#idx]`，能 drill 回全文对应轮次。
+
+### ④ Update Planner（Library Management 前半段）
+
+- **依赖**：③ 的 `history_pool`（默认读 digest）+ ⓪ 的 candidate stats schema。
+- **触发**：`history_pool` 未处理数 ≥ `update_planner.trigger_history_count`（默认 5）自动跑；
+  用 `mem/.processed_history` 记游标，只处理增量。
+- **交付物**：
+  1. **History Reader 只读工具集**：`list_unprocessed` / `read_digest` / `read_history(field,offset,limit)` /
+     `grep_history` / `read_library` / `propose`（终结工具）。**digest 优先、按需 drill**，单次调用读取
+     硬上限 `update_planner.max_read_iterations`（默认 20）。cap-x 自有实现，不依赖外部 `adb` CLI。
+  2. **LLM-1 提议 → LLM-2 审核** 双 LLM 循环：审核查 `source_history` 引用属实 / 去重 / 无 bug /
+     够 general / 粒度 ≤ atomic（拒 `put_apple()` 这类绑物体的）；pass 由 **LLM-2 写入**
+     `func_candidate_pool`（含 `*.stats.json`），不 pass 带 feedback 让 LLM-1 revise，上限
+     `update_planner.max_revise_iterations`（默认 5）超限强制定稿。
+  3. 处理完这批 → 标记已处理（history 文件保留）。
+- **交付物结构**：`propose` payload = `{candidates:[{func_name,target_library,code,source_history,rationale}]}`。
+- **完成判据**：攒够 ≥5 条 history 后自动触发，落出 `func_candidate_pool/<func>.py` + `.stats.json`，
+  `source_history` 指向真实 id，`.processed_history` 正确推进。
+
+### ⑤ Benchmark Evaluator（Library Management 后半段）
+
+- **依赖**：④ 的 `func_candidate_pool`；`integration.md` 的注入点；VDM。
+- **触发**：夜间 cron 一次（⑥ 调度）或人工唤醒；仅 pool 非空时跑。
+- **交付物**：
+  1. **注入**：用 `SkillLibrary.get_skill_docs()` / `inject_into_namespace()` 把 candidate 作为**可选工具**
+     加入，在 sim 里跑 benchmark（类似 `scripts/run_agent0_qwen36_{robosuite,libero}.sh`），**VDM 自动判成功**。
+  2. **统计累积**（跟随 candidate，不记 negative）：`positive` / `used_runs` / `eval_runs`。
+  3. **决策 + 报告**：promote（`positive ≥ promote_threshold`(10) 且 `eval_runs ≥ min_samples`(5)）/
+     abandon（`eval_runs > max_idle_evals`(50) 且 `used_runs==0` 且无人引用，引用关系删除前动态扫描）/
+     keep；固化函数 docstring 记更新日期。生成简单报告。
+  4. **批准 = PR**：把本轮 promote（写 `capx/skill_library/` / `capx/atomic_task_library/`）与 abandon
+     （删 `func_candidate_pool` 候选）的改动落成**一个 PR**，报告作为 PR 描述。**Evaluator 自己绝不直接
+     改长期库 / 删候选**——一切等用户 **merge（批准）/ close（否决）**。
+- **关键约束**：任何 promote/delete 只能经 PR、由用户 merge 后生效；报告只提议不动手。
+- **完成判据**：对非空 pool 跑一轮后 stats 正确累加、产出建议报告并开出一个含改动的 PR；
+  只有 PR 被 merge 后 `capx/skill_library/` / `capx/atomic_task_library/` 才更新、候选才从 pool 删除。
+
+### ⑥ Heartbeat / Cron（调度层）
+
+- **依赖**：① live loop（产新成功 history）；⑤ Evaluator。
+- **交付物**：
+  1. **Heartbeat**：唤起 daily task —— 把*正确率低*的 task 拎给人 feedback（走 ①），用新成功 history 推动 library 更新。
+  2. **Cron**：固定时刻触发 heartbeat；典型为夜间固定时间触发 Benchmark Evaluator（参考 openclaw 实现）。
+- **完成判据**：cron 能在设定时刻自动触发 Evaluator；heartbeat 能挑低分 task 派给交互循环。
+
+---
+
+## 4. Backlog / 暂缓（不在主线，触发条件满足再做）
+
+- **用户搁置的候选目标在 `TASK_TMP_ASIDE.md`** —— 那是用户自己维护的「也许将来做」清单（当前含：
+  headless benchmark 同步 web 的 VDM/错误处理改进、task-setting 相关的多视角 VDM）。每条带触发条件，
+  满足后再升入上面的主线 §3。本文件不重复其内容，避免两处维护。
+- **来自设计的未来项**（`docs-se/concepts.md`）：Memory Compact（§6，目前不做）、rgbd video feedback
+  （§7，human feedback 当前仅 text；未来支持 rgbd demo 视频 → 专门 skill 处理）。
