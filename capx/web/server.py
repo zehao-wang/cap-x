@@ -482,9 +482,16 @@ def create_app() -> FastAPI:
         if not output_dir:
             return {"records": [], "path": None, "exists": False}
 
+        # The trace is split per attempt (trial_NN/attempt_NN/llm_trace.jsonl);
+        # zero-padded names sort so the last candidate is the latest attempt of
+        # the latest trial — the "current" conversation to show in the UI.
         root = Path(output_dir)
-        candidates = sorted(root.glob("trial_*/llm_trace.jsonl"))
-        trace_path = candidates[-1] if candidates else root / "trial_01" / "llm_trace.jsonl"
+        candidates = sorted(root.glob("trial_*/attempt_*/llm_trace.jsonl"))
+        trace_path = (
+            candidates[-1]
+            if candidates
+            else root / "trial_01" / "attempt_00" / "llm_trace.jsonl"
+        )
         if not trace_path.exists():
             return {"records": [], "path": str(trace_path), "exists": False}
 

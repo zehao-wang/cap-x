@@ -1,6 +1,13 @@
 """Structured per-trial trace of agent <-> LLM interactions and tool-call flow.
 
-Each trial gets three artifacts in its output directory (``trial_XX/``):
+The trace is split **per attempt** so each reset-and-retry round has its own
+self-contained conversation log. A trial dir holds one subfolder per attempt::
+
+    trial_XX/
+      attempt_00/{llm_trace.jsonl, events.jsonl, trace.md, trace_images/}
+      attempt_01/...
+
+with these three artifacts in each attempt folder:
 
   - ``llm_trace.jsonl`` : one JSON record per LLM call — phase, turn, model, the
     *full* input messages, and the model's full output (content + reasoning),
@@ -11,15 +18,21 @@ Each trial gets three artifacts in its output directory (``trial_XX/``):
     each) and tool-execution steps (from ``execution_logger``), so the
     tool-call flow and the conversation interleave in real execution order.
   - ``trace.md``        : a human-readable rendering of ``events.jsonl``, written
-    at finalize time.
+    when the attempt rolls over (``new_attempt``) or the trial finalizes.
+
+The attempt index is kept in lockstep with the viser ``frame_history`` segments
+(one segment per attempt) by the trial runner: it calls :meth:`new_attempt` at
+the same point a reset starts a fresh segment, so ``attempt_NN/`` here and
+``attempt_NN/observations.npz`` (the viser history) refer to the same attempt.
 
 Usage::
 
-    trace = TraceLogger(trial_dir, model=args.model)
+    trace = TraceLogger(trial_dir, model=args.model)   # opens attempt_00/
     trace.log_llm(phase="initial", turn=1, input_messages=msgs,
                   output_content=text, output_reasoning=reasoning)
     trace.log_tool(tool_name="SAM3", text="...", block_index=0, n_images=1)
-    trace.finalize()  # writes trace.md
+    trace.new_attempt()   # on reset/retry -> rolls over to attempt_01/
+    trace.finalize()      # writes the current attempt's trace.md
 
 ``NullTraceLogger`` is a no-op drop-in for runs without an output directory.
 """
@@ -43,26 +56,44 @@ class TraceLogger:
     from the env worker thread; LLM calls from the asyncio thread)."""
 
     def __init__(self, trial_dir: str | Path, model: str | None = None) -> None:
-        self.dir = Path(trial_dir)
+        self.base_dir = Path(trial_dir)
+        self.default_model = model
+        self._lock = threading.Lock()
+        self._attempt = 0
+        self._open_attempt()
+
+    def _open_attempt(self) -> None:
+        """Point the trace artifacts at ``attempt_{N}/`` and reset per-attempt
+        counters. Starts fresh so a re-run of the same dir doesn't append to
+        stale files (images are overwritten in place by name)."""
+        self.dir = self.base_dir / f"attempt_{self._attempt:02d}"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.img_dir = self.dir / "trace_images"
         self.llm_path = self.dir / "llm_trace.jsonl"
         self.events_path = self.dir / "events.jsonl"
         self.md_path = self.dir / "trace.md"
-        self.default_model = model
 
-        self._lock = threading.Lock()
-        self._seq = 0          # global event ordinal
-        self._llm_seq = 0      # LLM-call ordinal
+        self._seq = 0          # global event ordinal (per attempt)
+        self._llm_seq = 0      # LLM-call ordinal (per attempt)
         self._events: list[dict[str, Any]] = []
 
-        # Start fresh so a re-run of the same trial dir doesn't append to stale
-        # files. (Images are overwritten in place by name.)
         for p in (self.llm_path, self.events_path, self.md_path):
             try:
                 p.unlink()
             except FileNotFoundError:
                 pass
+
+    def new_attempt(self) -> None:
+        """Roll over to a fresh attempt subfolder, retaining prior ones.
+
+        Renders the current attempt's ``trace.md`` first, then advances the
+        attempt index and reopens the artifacts under the new ``attempt_NN/``.
+        The runner calls this in lockstep with the viser ``frame_history``
+        ``new_segment`` so attempt indices match across both."""
+        with self._lock:
+            self._finalize_unlocked()
+            self._attempt += 1
+            self._open_attempt()
 
     # ------------------------------------------------------------------ utils
     def _append(self, path: Path, rec: dict[str, Any]) -> None:
@@ -193,34 +224,37 @@ class TraceLogger:
             })
 
     def finalize(self) -> None:
-        """Render the chronological ``events`` into a readable ``trace.md``."""
+        """Render the current attempt's ``events`` into a readable ``trace.md``."""
         with self._lock:
-            lines = ["# Trial trace", ""]
-            for ev in self._events:
-                if ev.get("type") == "llm":
-                    lines.append(
-                        f"## [{ev['seq']}] LLM · {ev['phase']} · turn {ev['turn']} · {ev.get('model')}"
-                    )
-                    if ev.get("decision"):
-                        lines.append(f"- decision: `{ev['decision']}`")
-                    lines.append(f"- code blocks: {ev.get('n_code_blocks', 0)}")
-                    lines.append(f"- full I/O: `llm_trace.jsonl` call #{ev['llm_call']}")
-                    preview = (ev.get("output_preview") or "").strip()
-                    if preview:
-                        lines.append("")
-                        lines.append("> " + preview.replace("\n", "\n> "))
+            self._finalize_unlocked()
+
+    def _finalize_unlocked(self) -> None:
+        lines = [f"# Attempt {self._attempt:02d} trace", ""]
+        for ev in self._events:
+            if ev.get("type") == "llm":
+                lines.append(
+                    f"## [{ev['seq']}] LLM · {ev['phase']} · turn {ev['turn']} · {ev.get('model')}"
+                )
+                if ev.get("decision"):
+                    lines.append(f"- decision: `{ev['decision']}`")
+                lines.append(f"- code blocks: {ev.get('n_code_blocks', 0)}")
+                lines.append(f"- full I/O: `llm_trace.jsonl` call #{ev['llm_call']}")
+                preview = (ev.get("output_preview") or "").strip()
+                if preview:
                     lines.append("")
-                else:
-                    head = f"- 🛠 [{ev['seq']}] {ev.get('tool_name', 'tool')}"
-                    if ev.get("block_index") is not None:
-                        head += f" (block {ev['block_index']})"
-                    if ev.get("n_images"):
-                        head += f" · {ev['n_images']} img"
-                    lines.append(head)
-                    text = (ev.get("text") or "").strip()
-                    if text:
-                        lines.append(f"  - {text[:240]}")
-            self.md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                    lines.append("> " + preview.replace("\n", "\n> "))
+                lines.append("")
+            else:
+                head = f"- 🛠 [{ev['seq']}] {ev.get('tool_name', 'tool')}"
+                if ev.get("block_index") is not None:
+                    head += f" (block {ev['block_index']})"
+                if ev.get("n_images"):
+                    head += f" · {ev['n_images']} img"
+                lines.append(head)
+                text = (ev.get("text") or "").strip()
+                if text:
+                    lines.append(f"  - {text[:240]}")
+        self.md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class NullTraceLogger:
@@ -230,6 +264,9 @@ class NullTraceLogger:
         pass
 
     def log_tool(self, **kwargs: Any) -> None:  # noqa: D102
+        pass
+
+    def new_attempt(self) -> None:  # noqa: D102
         pass
 
     def finalize(self) -> None:  # noqa: D102

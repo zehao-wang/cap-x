@@ -105,7 +105,7 @@ self-evolve 系统在 agent0 之上**新增 / 部分重新设计**，使其能�
 | 文档 | 状态 | 读 → 写 |
 | --- | --- | --- |
 | [01-interactive-loop.md](01-interactive-loop.md) | ✅ | human → 成功 trial（喂给 Feedback Postprocessor） |
-| [02-visualization.md](02-visualization.md) | ✅ | 观测帧 → viser 回放 + `outputs/.../attempt_NN.npz`（纯 UI，不影响 pipeline 数据） |
+| [02-visualization.md](02-visualization.md) | ✅ | 观测帧 → viser 回放 + `outputs/.../attempt_NN/observations.npz`（纯 UI，不影响 pipeline 数据） |
 | [03-feedback-postprocessor.md](03-feedback-postprocessor.md) | 🔲 | 成功 trial → `history_pool`（通用化 `final_code` + 入 pool 前 distill 出 `.digest.md`） |
 | [04-update-planner.md](04-update-planner.md) | 🔲 | `history_pool`（默认读 digest / 按需 drill 原文）→ `func_candidate_pool` |
 | [05-benchmark-evaluator.md](05-benchmark-evaluator.md) | 🔲 | `func_candidate_pool` →（批准后）长期 library |

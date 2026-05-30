@@ -7,7 +7,11 @@ from capx.harnesses.prompt import (
     prepare_multiturn_console_text,
     truncate_text_for_prompt,
 )
-from capx.web.trial_support import build_state_diff_prompt
+from capx.web.trial_support import (
+    build_feedback_distill_prompt,
+    build_feedback_regeneration_block,
+    build_state_diff_prompt,
+)
 
 
 def test_prompt_harness_logs_when_it_cleans_or_truncates(caplog) -> None:
@@ -120,3 +124,44 @@ def test_prepare_multiturn_console_text_applies_stdout_stderr_policies() -> None
     assert console_text.stderr.endswith("-stderr-end")
     assert "console stderr truncated" in console_text.stderr
     assert len(console_text.stderr) <= 8_000
+
+
+def test_feedback_distill_prompt_strips_api_docs_and_carries_feedback() -> None:
+    prompt = build_feedback_distill_prompt(
+        "Goal: lift the pot.\n\nAPIs:\nmove_to_joints()",
+        prior_guidance="- avoid top-down grasps",
+        human_feedback="blue handle was not grasped; add a pre-grasp check",
+        failure_stdout="Task completed successfully.",
+        failure_stderr="",
+        max_bullets=8,
+    )
+
+    assert prompt[0]["role"] == "system"
+    user_text = prompt[1]["content"]
+    # Task description is cleaned of API docs defensively.
+    assert "move_to_joints()" not in user_text
+    assert "APIs:" not in user_text
+    # Prior guidance, the new feedback, and the failure evidence all appear.
+    assert "avoid top-down grasps" in user_text
+    assert "add a pre-grasp check" in user_text
+    assert "Task completed successfully." in user_text
+    assert "AT MOST 8" in user_text
+
+
+def test_feedback_regeneration_block_labels_sections_and_omits_code() -> None:
+    block = build_feedback_regeneration_block(
+        operator_guidance="- bring both grippers above their handle first",
+        human_feedback="the task is simple, just grasp",
+        failure_stdout="Manual grasp for blue handle at [...]",
+        failure_stderr="IK failed for arm 1",
+    )
+
+    # All three attributed sections are present and clearly labelled.
+    assert "OPERATOR GUIDANCE (cumulative, authoritative" in block
+    assert "WHY THE PREVIOUS ATTEMPT DID NOT SUCCEED" in block
+    assert "LATEST HUMAN FEEDBACK (verbatim, authoritative)" in block
+    # Carries the verbatim feedback + key failure evidence.
+    assert "the task is simple, just grasp" in block
+    assert "IK failed for arm 1" in block
+    # Tells the model to disregard self-asserted success.
+    assert "regardless of any" in block

@@ -102,14 +102,25 @@ interactive 在 **模型自驱 multi-turn** 外面套一层 **人类循环**：
 
 ## 8. 交互行为日志（debug / 追溯）
 
-每个 trial 把 agent↔LLM 的每次交互与 tool 调用流结构化落盘到 `output_dir/trial_XX/`，便于查询和
-追溯模型行为（实现 `capx/utils/trace_logger.py`，接进 `async_trial_runner.py`）：
+每个 trial 把 agent↔LLM 的每次交互与 tool 调用流结构化落盘，便于查询和追溯模型行为（实现
+`capx/utils/trace_logger.py`，接进 `async_trial_runner.py`）。**trace 按 attempt 分目录**——每次
+reset 重跑都是独立一段对话，互不污染：
 
+```
+output_dir/trial_XX/
+  attempt_00/{llm_trace.jsonl, events.jsonl, trace.md, trace_images/, observations.npz}
+  attempt_01/…
+```
+
+- **attempt 索引与 viser segment 对齐**：runner 在每次 feedback reset 后调用 `trace.new_attempt()`，
+  与 `frame_history.new_segment()` 同步推进；两边都用「上一段跑过代码才推进」的守卫（runner 侧
+  `attempt_has_run`，frame_history 侧空 segment no-op），所以 `attempt_NN/llm_trace.jsonl` 与同目录的
+  `observations.npz`（[02-visualization.md](02-visualization.md)）指向同一次 attempt。
 - **`llm_trace.jsonl`**：每次 LLM 调用一条记录——`phase`（initial / multi_turn / feedback_retry /
-  env_description / img_differencing）、`turn`、`model`、耗时、**完整输入 messages** 与
+  feedback_distill / env_description / img_differencing）、`turn`、`model`、耗时、**完整输入 messages** 与
   **输出 content + reasoning**（REGENERATE/FINISH 决策与生成的代码都在 output content 里）。输入里
   的内联图片会被抽出存成 `trace_images/llmNNN_imgK.png`，JSONL 里只留引用，保持文件小、易 `jq` 查询。
 - **`events.jsonl`**：把 LLM 调用与 tool 执行步骤（`execution_logger` 的 step）**按时间顺序合并**，
   实时追加，清晰看到「tool 调用流 + 每轮对话」的真实交织顺序。
-- **`trace.md`**：trial 结束（含成功 / Stop 取消 / 报错任一退出路径，写在 `finally` 里）时，
-  由 `events.jsonl` 渲染出的人类可读时间线。
+- **`trace.md`**：每段 attempt 滚动（`new_attempt`）或 trial 结束（含成功 / Stop 取消 / 报错任一退出
+  路径，写在 `finally` 里）时，由该 attempt 的 `events.jsonl` 渲染出的人类可读时间线。

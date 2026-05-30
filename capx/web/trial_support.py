@@ -148,3 +148,96 @@ def build_state_diff_prompt(
         },
         {"role": "user", "content": content},
     ]
+
+
+def build_feedback_distill_prompt(
+    task_description: str,
+    prior_guidance: str,
+    human_feedback: str,
+    failure_stdout: str | None,
+    failure_stderr: str | None,
+    *,
+    max_bullets: int = 10,
+) -> list[dict]:
+    """Dedicated text-only call that distils cumulative operator guidance.
+
+    Run once per human-feedback round. It folds the new (free-form) human
+    feedback — and the key failure evidence from the attempt just run — into a
+    SHORT, deduplicated, persistent bullet list that is carried into every
+    subsequent regeneration. This keeps the regeneration context bounded instead
+    of accumulating raw feedback + full code each round: superseded items are
+    replaced, not appended. The distiller never writes code.
+    """
+    task_description = clean_vdm_task_description(task_description)
+    prior = (prior_guidance or "").strip() or "(none yet)"
+    fb = (human_feedback or "").strip()
+    parts = [
+        f"Task:\n{task_description}",
+        f"\nCurrent operator guidance (carried from earlier feedback rounds):\n{prior}",
+    ]
+    so = (failure_stdout or "").strip()
+    se = (failure_stderr or "").strip()
+    if so or se:
+        parts.append(
+            "\nKey console evidence from the attempt the human just judged as "
+            "unsuccessful. The agent's own prints may falsely claim success "
+            "('Task completed', 'Pot lifted', ...) — treat such claims with "
+            f"suspicion:\nstdout:\n{so or '(empty)'}\nstderr:\n{se or '(empty)'}"
+        )
+    parts.append(f"\nNew human feedback (authoritative):\n{fb}")
+    parts.append(
+        "\nProduce the UPDATED operator guidance: fold the new feedback into the "
+        "existing list, merge duplicates, and DROP or REPLACE any item the new "
+        "feedback supersedes. Keep every item concrete, imperative, and durable "
+        "(a rule that should hold for future attempts, not a one-off remark). "
+        f"Output AT MOST {max_bullets} short bullet lines and NOTHING else — no "
+        "preamble, no code, no explanation."
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You maintain a concise, durable checklist of operator "
+                "instructions for a robot-control coding agent. You translate a "
+                "human operator's free-form feedback into a short, deduplicated "
+                "bullet list that the agent must follow on its next attempt. You "
+                "keep the list SHORT: superseded or redundant items are removed, "
+                "not appended. You never write code."
+            ),
+        },
+        {"role": "user", "content": "\n".join(parts)},
+    ]
+
+
+def build_feedback_regeneration_block(
+    operator_guidance: str,
+    human_feedback: str,
+    failure_stdout: str | None,
+    failure_stderr: str | None,
+) -> str:
+    """Assemble the single labelled user turn appended on a feedback retry.
+
+    Carries three clearly-attributed sections into the regeneration: the
+    cumulative (distilled) operator guidance, the previous attempt's key failure
+    as console evidence, and the verbatim latest human feedback. The previous
+    attempt's full code is deliberately NOT carried.
+    """
+    guidance = (operator_guidance or "").strip() or "(none)"
+    fb = (human_feedback or "").strip() or "(none)"
+    so = (failure_stdout or "").strip() or "(empty)"
+    se = (failure_stderr or "").strip() or "(empty)"
+    return (
+        "The simulator has been reset to the start of this episode; none of your "
+        "earlier steps persist. Write a COMPLETE solution from the initial state, "
+        "incorporating the operator guidance and feedback below.\n\n"
+        "=== OPERATOR GUIDANCE (cumulative, authoritative — you MUST follow every "
+        "item) ===\n"
+        f"{guidance}\n\n"
+        "=== WHY THE PREVIOUS ATTEMPT DID NOT SUCCEED ===\n"
+        "A human operator judged the previous attempt as unsuccessful, regardless "
+        "of any 'success'/'completed' text the code printed. Console evidence "
+        "from that attempt:\n"
+        f"stdout:\n{so}\n\nstderr:\n{se}\n\n"
+        "=== LATEST HUMAN FEEDBACK (verbatim, authoritative) ===\n"
+        f"{fb}"
+    )

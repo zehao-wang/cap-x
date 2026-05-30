@@ -215,7 +215,7 @@ class FrankaRobosuiteSpillWipeLowLevel(RobosuiteBaseEnv):
             self.mjcf_ee_frame_handle.position = obs_cartesian[:3]
             self.mjcf_ee_frame_handle.wxyz = obs_cartesian[3:]
 
-            from capx.utils.camera_utils import obs_get_rgb
+            from capx.utils.camera_utils import build_history_cameras, obs_get_rgb
             from capx.utils.depth_utils import depth_color_to_pointcloud
             from capx.utils.viser_history import ViserFrameHistory
 
@@ -227,14 +227,9 @@ class FrankaRobosuiteSpillWipeLowLevel(RobosuiteBaseEnv):
                     urdf_vis=getattr(self, "urdf_vis", None),
                     render_aspect=self._render_width / self._render_height,
                 )
-            cameras_for_history = {
-                k: {
-                    "image": rbg_imgs[k],
-                    "pose_xyz_wxyz": obs[k].get("pose") if k in obs else None,
-                    "fov": obs[k].get("fov") if k in obs else None,
-                }
-                for k in rbg_imgs
-            }
+            cameras_for_history = build_history_cameras(
+                obs, getattr(self, "render_camera_names", None)
+            )
             self.frame_history.record(
                 cameras_for_history,
                 step=self._sim_step_count,

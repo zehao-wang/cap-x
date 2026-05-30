@@ -121,20 +121,31 @@ class ViserFrameHistory:
         if self._segments:
             save_frames(self._segments[-1], path)
 
-    def save_segments(self, directory: str, prefix: str = "attempt") -> list[str]:
-        """Dump every non-empty segment in order to ``directory``.
+    def save_segments(
+        self,
+        directory: str,
+        prefix: str = "attempt",
+        filename: str = "observations.npz",
+    ) -> list[str]:
+        """Dump every non-empty segment into a per-attempt subfolder.
 
-        Files are named ``{prefix}_{i:02d}.npz`` (i = attempt index). Returns
-        the paths written. No-op for empty segments.
+        Writes ``{directory}/{prefix}_{i:02d}/{filename}`` (i = attempt index),
+        so each attempt's observations live alongside its LLM trace (the trial
+        runner points ``directory`` at ``trial_NN/`` and the trace logger writes
+        ``trial_NN/attempt_NN/`` in lockstep). Only the task config's standard
+        views are recorded (see ``camera_utils.build_history_cameras``), so the
+        saved cameras match what the agent actually observes. Returns the paths
+        written; empty segments (only ever the trailing one) are skipped.
         """
         import os
 
-        os.makedirs(directory, exist_ok=True)
         written: list[str] = []
         for i, frames in enumerate(self._segments):
             if not frames:
                 continue
-            path = os.path.join(directory, f"{prefix}_{i:02d}.npz")
+            attempt_dir = os.path.join(directory, f"{prefix}_{i:02d}")
+            os.makedirs(attempt_dir, exist_ok=True)
+            path = os.path.join(attempt_dir, filename)
             save_frames(frames, path)
             written.append(path)
         return written

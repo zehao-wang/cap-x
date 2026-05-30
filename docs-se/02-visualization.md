@@ -2,7 +2,7 @@
 
 > **状态**: ✅ 已实现
 > **读 → 写**: 每步观测帧（相机图像 + 位姿 + FOV + joints）→ viser 面板回放 +
-> `outputs/trial_NN/viser_history/attempt_NN.npz`
+> `outputs/trial_NN/attempt_NN/observations.npz`
 > **实现**: `capx/utils/viser_history.py`（数据/生命周期 facade）、
 > `capx/utils/viser_playback_panel.py`（viser GUI/scene）、
 > `capx/utils/viser_history_io.py`（`.npz` 持久化）
@@ -11,8 +11,14 @@
 > 全新 trial 时 `clear()`。
 
 - **每次 reset = 一段新可视化**。所有 segment 常驻内存，界面 **Attempt 下拉**可选看任意一次
-  尝试；同时每段按顺序保存到 `outputs/trial_NN/viser_history/attempt_00.npz`、`attempt_01.npz`
-  …（与当前 trial 绑定；new trial 即全新开始）。
+  尝试；同时每段按顺序保存到 `outputs/trial_NN/attempt_00/observations.npz`、
+  `attempt_01/observations.npz` …——**与该 attempt 的 LLM trace 同目录**
+  （见 [01-interactive-loop.md](01-interactive-loop.md) §8），attempt 索引两边对齐。与当前
+  trial 绑定；new trial 即全新开始。
+- **只记录 config 标准视角**：`record()` 收到的相机由 `camera_utils.build_history_cameras(obs,
+  render_camera_names)` 构造——只取任务 config 声明的标准观测视角（单目一个、wrist+external
+  双目两个），丢弃 simulator 为代码侧便利加的别名键（如指向 `agentview` 同一张图的
+  `robot0_robotview`）。这样既不会把单视角任务拼成两张相同图，落盘的相机也正是 agent 实际观测的。
 - **camera frustum 必须符合设定**：3D 中每个相机各自画 frustum，朝向 + 位置取自相机外参，
   视锥张角取相机真实 FOV（由内参 / `cam_fovy` 推出），不再用硬编码默认值。
 - **Multi-view 拼接**：一帧里多相机的图像**横向拼成一张** Observation 图显示；3D 里仍每相机

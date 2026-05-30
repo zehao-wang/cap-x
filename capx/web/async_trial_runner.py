@@ -65,6 +65,8 @@ from capx.web.session_manager import (
 )
 from capx.web.trial_support import (
     LaunchArgsCompat,
+    build_feedback_distill_prompt,
+    build_feedback_regeneration_block,
     build_initial_state_prompt,
     build_state_diff_prompt,
     encode_frame_png as _encode_frame_png,
@@ -362,6 +364,11 @@ async def run_trial_async(
         code_blocks: list[str] = []
         code_block_metadata: list[dict] = []
         code_block_idx = 0
+        # Whether the current attempt has executed any code yet. Mirrors the
+        # viser frame_history "empty segment" guard so the per-attempt trace
+        # rolls over (trace.new_attempt) in lockstep with new viser segments:
+        # a feedback retry that produced no code does not advance either.
+        attempt_has_run = False
         num_regenerations = 0
         num_finishes = 0
         all_responses: list[dict] = []
@@ -605,13 +612,13 @@ async def run_trial_async(
                 return "feedback", payload
             return "continue", ""
 
-        # Human feedback targets only the most recent attempt and is not
-        # retained long-term (§9.2): each regeneration is rebuilt from the clean
-        # task base + the previous attempt's full code + the current feedback as
-        # its own user turn — no accumulation, no multi-step scaffold (§9.5).
-        # Set when the human confirms success; the sole success signal in
-        # interactive mode (§4.1).
-        human_finished = False
+        # Each regeneration is rebuilt from the clean task base + a single
+        # labelled block (cumulative operator guidance + the previous attempt's
+        # key failure + the verbatim latest feedback). The previous attempt's
+        # full code is NOT carried; cumulative feedback is kept concise by a
+        # dedicated distiller call (§9.2), so context stays bounded.
+        human_finished = False  # set on human-confirmed success (sole signal, §4.1)
+        operator_guidance = ""  # distilled, deduplicated guidance carried across rounds
 
         # ========================================================================
         # Initial code generation (with streaming)
@@ -664,6 +671,9 @@ async def run_trial_async(
         interactive = session.await_user_input_each_turn
         force_end = False          # request the model multi-turn loop to end now
         post_step_frame = None     # latest rendered frame (for the human to judge)
+        # Console output of the last executed block — carried into a feedback
+        # retry as the attempt's "key failure" evidence (not the full code).
+        last_exec = {"stdout": "", "stderr": ""}
         while True:
             if is_cancelled():
                 raise asyncio.CancelledError("Cancelled during code execution")
@@ -702,11 +712,8 @@ async def run_trial_async(
                     f = env.render() if hasattr(env, "render") else None
                     return o, f
 
-                # The full code of the attempt just run — the only attempt-
-                # specific context carried into the regeneration.
-                prev_attempt_code = "\n\n".join(code_blocks)
-
-                # Pause for the human. Finish ends the trial; feedback resets and
+                # Pause for the human. Finish ends the trial; feedback distils
+                # into cumulative operator guidance, resets the scene, and
                 # re-attempts; an empty send is a no-op (keep waiting).
                 new_blocks: list[str] = []
                 while True:
@@ -717,6 +724,50 @@ async def run_trial_async(
                     if action != "feedback":
                         continue  # empty send / legacy reset: keep waiting
                     feedback_text = fb_text
+                    logger.info(f"Human feedback: {feedback_text[:100]}...")
+
+                    # Key failure of the attempt just run — carried into the
+                    # regeneration as console evidence (NOT the full code), bounded
+                    # by the prompt harness so the context stays small.
+                    failure_console = prepare_multiturn_console_text(
+                        last_exec["stdout"], last_exec["stderr"],
+                    )
+
+                    # Dedicated distiller call: fold this feedback (+ the failure)
+                    # into one SHORT, deduplicated operator-guidance block that
+                    # persists across rounds. Keeps specialised work specialised
+                    # and the regeneration context bounded (§9.2).
+                    distill_prompt = build_feedback_distill_prompt(
+                        task_description,
+                        operator_guidance,
+                        feedback_text,
+                        failure_console.stdout,
+                        failure_console.stderr,
+                    )
+                    # A distiller failure must not abort the trial or discard the
+                    # human's feedback: keep the prior guidance and let the retry
+                    # proceed on the verbatim feedback + failure block below.
+                    try:
+                        distill_out = await asyncio.to_thread(_query_model, args, distill_prompt)
+                        distilled = (distill_out or {}).get("content")
+                    except Exception as e:  # noqa: BLE001 - degrade gracefully
+                        logger.warning(f"Feedback distillation failed; keeping prior guidance: {e}")
+                        distilled = None
+                    if distilled and distilled.strip():
+                        operator_guidance = distilled.strip()
+                    trace.log_llm(
+                        phase="feedback_distill",
+                        turn=turn_number,
+                        input_messages=distill_prompt,
+                        output_content=operator_guidance,
+                        model=args.model,
+                    )
+                    await emit(ImageAnalysisEvent(
+                        session_id=session.session_id,
+                        analysis_type="operator_guidance",
+                        content=operator_guidance,
+                        model_used=args.model,
+                    ))
 
                     if is_real_robot:
                         # Real hardware: run the guided 3-step reset wizard
@@ -735,19 +786,31 @@ async def run_trial_async(
                             ))
                         obs, reset_frame = await run_in_env_thread(_restore_and_render)
 
+                    # The reset above started a fresh viser segment (new_segment
+                    # in restore_state); roll the trace over to the matching
+                    # attempt_NN/ so this retry's conversation is logged on its
+                    # own. Guarded like the viser empty-segment check: a retry
+                    # that produced no code does not advance the attempt index.
+                    if attempt_has_run:
+                        trace.new_attempt()
+                        attempt_has_run = False
+
                     # Regeneration context = clean task base (KEEPS the API / tool
-                    # docs) + previous attempt's full code + feedback. Only the
-                    # previous turn's reasoning / intermediate steps are dropped.
+                    # docs) + one labelled block: cumulative operator guidance, the
+                    # previous attempt's key failure, and the verbatim latest
+                    # feedback. The previous attempt's full code is NOT carried.
                     gen_prompt = copy.deepcopy(clean_base_prompt)
-                    reset_note = (
-                        "The simulator has been reset to the start of this episode; "
-                        "none of the earlier steps persist. Your previous attempt's "
-                        "code was:\n```python\n"
-                        f"{prev_attempt_code}\n```"
-                    )
                     gen_prompt.append({
                         "role": "user",
-                        "content": [{"type": "text", "text": reset_note}],
+                        "content": [{
+                            "type": "text",
+                            "text": build_feedback_regeneration_block(
+                                operator_guidance,
+                                feedback_text,
+                                failure_console.stdout,
+                                failure_console.stderr,
+                            ),
+                        }],
                     })
                     if reset_frame is not None:
                         _img, _b64url = _encode_frame_png(reset_frame)
@@ -764,12 +827,6 @@ async def run_trial_async(
                             gen_prompt[-1]["content"].append(
                                 {"type": "image_url", "image_url": {"url": _b64url}}
                             )
-                    if feedback_text:
-                        logger.info(f"Human feedback: {feedback_text[:100]}...")
-                        gen_prompt.append({
-                            "role": "user",
-                            "content": [{"type": "text", "text": feedback_text}],
-                        })
 
                     turn_number += 1
                     raw_code, reasoning = await _stream_query(
@@ -822,6 +879,9 @@ async def run_trial_async(
             ))
 
             logger.info(f"Executing code block {code_block_idx}")
+            # This attempt is now running code -> its viser segment will hold
+            # frames and its trace dir is "used", so the next reset rolls over.
+            attempt_has_run = True
 
             # Set up execution logger to capture detailed execution steps
             # The emit callback sends events via WebSocket in real-time
@@ -891,12 +951,17 @@ async def run_trial_async(
                     )
                 except asyncio.TimeoutError:
                     logger.warning(f"Code block {code_block_idx} timed out after {exec_timeout}s")
+                    timeout_msg = (
+                        f"Execution timed out after {exec_timeout} seconds. The code "
+                        "may be stuck in a loop or waiting for an unreachable target."
+                    )
+                    last_exec = {"stdout": "", "stderr": timeout_msg}
                     await emit(CodeExecutionResultEvent(
                         session_id=session.session_id,
                         block_index=code_block_idx,
                         success=False,
                         stdout="",
-                        stderr=f"Execution timed out after {exec_timeout} seconds. The code may be stuck in a loop or waiting for an unreachable target.",
+                        stderr=timeout_msg,
                         reward=0.0,
                         task_completed=False,
                     ))
@@ -931,6 +996,7 @@ async def run_trial_async(
                 reward=reward,
                 task_completed=info_step.get("task_completed"),
             ))
+            last_exec = {"stdout": info_step["stdout"], "stderr": info_step["stderr"]}
 
             code_block_idx += 1
             obs = obs_next
@@ -1172,17 +1238,19 @@ async def run_trial_async(
             )
             logger.info(f"Trial artifacts saved to: {code_path}")
 
-            # Save the viser playback as one .npz per attempt segment, in order
-            # (attempt_00.npz, attempt_01.npz, …) so each reset's trail stays
-            # browsable under outputs/ and is bound to this trial (§9.4).
+            # Save the viser observations as one observations.npz per attempt,
+            # written into the SAME attempt_NN/ folder as that attempt's LLM
+            # trace (trial_NN/attempt_NN/observations.npz). Only the task config's
+            # standard views are recorded, so the saved cameras match what the
+            # agent observes — no duplicated views (§9.4).
             for cand in (getattr(env, "low_level_env", None), env):
                 fh = getattr(cand, "frame_history", None) if cand is not None else None
                 if fh is None:
                     continue
                 try:
-                    seg_dir = os.path.join(output_dir, f"trial_{trial:02d}", "viser_history")
-                    written = await asyncio.to_thread(fh.save_segments, seg_dir)
-                    logger.info(f"Saved {len(written)} viser attempt segment(s) to: {seg_dir}")
+                    trial_dir = os.path.join(output_dir, f"trial_{trial:02d}")
+                    written = await asyncio.to_thread(fh.save_segments, trial_dir)
+                    logger.info(f"Saved {len(written)} attempt observation file(s) under: {trial_dir}")
                 except Exception as exc:
                     logger.warning(f"viser segment save failed: {exc}")
                 break
