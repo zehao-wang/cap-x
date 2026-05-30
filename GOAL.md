@@ -45,8 +45,8 @@
 
 | 阶段 | 文档 | 状态 | 落地位置 / 备注 |
 | --- | --- | --- | --- |
-| ① Live Loop（human-in-the-loop 主循环） | `01-interactive-loop.md` | ✅ | `capx/web/async_trial_runner.py` + `capx/envs/base.py` |
-| ② Visualization（viser 回放） | `02-visualization.md` | ✅ | `capx/utils/viser_history*.py`、`viser_playback_panel.py` |
+| ① Live Loop（human-in-the-loop 主循环） | `01-interactive-loop.md` | ✅ | `capx/web/async_trial_runner.py`（已模块化出 `trial_support`/`vdm_feedback`/`trial_artifacts`/`reset_wizard`/`session_manager`）+ `capx/envs/base.py` |
+| ② Visualization（viser 回放） | `02-visualization.md` | ✅ | `capx/utils/viser_history.py`、`viser_history_io.py`、`viser_playback_panel.py` |
 | ③ Feedback Postprocessor + Experience Distill | `03-feedback-postprocessor.md` | 🔲 | 写 `mem/history_pool/<id>.json` + `<id>.digest.md` |
 | ④ Update Planner | `04-update-planner.md` | 🔲 | 读 `history_pool` → 写 `mem/func_candidate_pool/` |
 | ⑤ Benchmark Evaluator | `05-benchmark-evaluator.md` | 🔲 | candidate →（批准后）→ 长期 library |
