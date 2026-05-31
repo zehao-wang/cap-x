@@ -44,6 +44,26 @@ from capx.self_evolve.update_planner import (
     run_update_planner,
     should_trigger,
 )
+from capx.self_evolve.benchmark_eval import (
+    CandidateDecision,
+    CandidateInfo,
+    EvalRoundResult,
+    EvaluatorResult,
+    accumulate,
+    candidate_infos,
+    candidate_names_in_code,
+    decide,
+    render_report,
+    run_benchmark_evaluator,
+    scan_referenced_names,
+)
+from capx.self_evolve.library_pr import (
+    PlannedPR,
+    apply_planned_changes,
+    create_library_pr,
+    plan_pr,
+    stamp_docstring_date,
+)
 
 __all__ = [
     "SelfEvolveConfig",
@@ -70,4 +90,20 @@ __all__ = [
     "run_update_planner",
     "should_trigger",
     "UpdatePlannerResult",
+    "CandidateInfo",
+    "EvalRoundResult",
+    "CandidateDecision",
+    "EvaluatorResult",
+    "run_benchmark_evaluator",
+    "candidate_infos",
+    "scan_referenced_names",
+    "candidate_names_in_code",
+    "accumulate",
+    "decide",
+    "render_report",
+    "PlannedPR",
+    "plan_pr",
+    "apply_planned_changes",
+    "create_library_pr",
+    "stamp_docstring_date",
 ]
