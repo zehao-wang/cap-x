@@ -47,8 +47,8 @@
 | --- | --- | --- | --- |
 | ① Live Loop（human-in-the-loop 主循环） | `01-interactive-loop.md` | ✅ | `capx/web/async_trial_runner.py`（已模块化出 `trial_support`/`vdm_feedback`/`trial_artifacts`/`reset_wizard`/`session_manager`）+ `capx/envs/base.py` |
 | ② Visualization（viser 回放） | `02-visualization.md` | ✅ | `capx/utils/viser_history.py`、`viser_history_io.py`、`viser_playback_panel.py` |
-| ③ Feedback Postprocessor + Experience Distill | `03-feedback-postprocessor.md` | 🔲 | 写 `mem/history_pool/<id>.json` + `<id>.digest.md` |
-| ④ Update Planner | `04-update-planner.md` | 🔲 | 读 `history_pool` → 写 `mem/func_candidate_pool/` |
+| ③ Feedback Postprocessor + Experience Distill | `03-feedback-postprocessor.md` | 🟡 | 核心已实现+单测：`capx/self_evolve/feedback_postprocessor.py`；**剩 live-loop 接线**（async_trial_runner `human_finished` 分支 + 环境交互式 generalize）为 sim-gated，暂挂等真人在 web/sim 联调 |
+| ④ Update Planner | `04-update-planner.md` | ✅ | `capx/self_evolve/{history_reader,proposal,update_planner}.py` + `tests/test_update_planner.py`（注入 query_fn，scripted 全程单测） |
 | ⑤ Benchmark Evaluator | `05-benchmark-evaluator.md` | 🔲 | candidate →（批准后）→ 长期 library |
 | ⑥ Heartbeat / Cron | `06-heartbeat-cron.md` | 🔲 | 调度 daily task + 夜间触发 Evaluator |
 | ⓪ 共享存储脚手架（`mem/` schema + config） | `storage.md` / `config.md` | ✅ | `capx/self_evolve/`（`config.py` / `schemas.py` / `storage.py`）+ `tests/test_self_evolve_storage.py` |
