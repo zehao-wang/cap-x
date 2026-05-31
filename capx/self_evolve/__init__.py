@@ -32,6 +32,18 @@ from capx.self_evolve.feedback_postprocessor import (
     generalize_by_rewrite,
     run_feedback_postprocessor,
 )
+from capx.self_evolve.history_reader import HistoryReader
+from capx.self_evolve.proposal import (
+    Proposal,
+    ProposalCandidate,
+    validate_proposal,
+    write_accepted,
+)
+from capx.self_evolve.update_planner import (
+    UpdatePlannerResult,
+    run_update_planner,
+    should_trigger,
+)
 
 __all__ = [
     "SelfEvolveConfig",
@@ -50,4 +62,12 @@ __all__ = [
     "generalize_by_rewrite",
     "distill_experience",
     "PostprocessResult",
+    "HistoryReader",
+    "Proposal",
+    "ProposalCandidate",
+    "validate_proposal",
+    "write_accepted",
+    "run_update_planner",
+    "should_trigger",
+    "UpdatePlannerResult",
 ]

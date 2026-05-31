@@ -2,30 +2,31 @@
 
 ## 本次模块
 
-③ Feedback Postprocessor + Experience Distill（`docs-se/03-*.md`）。
-落地：`capx/self_evolve/feedback_postprocessor.py`，复用 ⓪ 的 `schemas.Digest` + `MemStore`。
+④ Update Planner（`docs-se/04-update-planner.md`）。读 history_pool 增量 → 写 func_candidate_pool。
+落地：`capx/self_evolve/{history_reader,proposal,update_planner}.py`，复用 ⓪ 的 MemStore/schemas。
 
-设计要点：
-- 流水线位置：live loop `human_finished`（async_trial_runner:674）之后、写 history_pool 之前。
-- 两步串行：① generalize-by-rewrite（仍与环境交互，每轮只人判对错）→ ② Experience Distill（定稿后跑一次）。
-- distill 固定四问 = digest schema 四小节；限长 `experience_distill.max_words`；每条带 `[#idx]` 溯源。
+> ③ 决议：核心已完成并单测；live-loop 接线 + 环境交互式 generalize 为 sim-gated，**暂挂**等真人在
+> web/sim 联调时再做（用户拍板先做 ④）。③ 在 GOAL.md 仍 🔲，附注说明。
 
 ## 可执行步骤
 
-- [x] 读 03-*.md + 01-*.md + storage/config + async_trial_runner 成功点 + query_model 契约。
-- [ ] `feedback_postprocessor.py`：依赖注入式核心（`query_fn` / `judge_fn` 回调，不绑 web）：
-      - 纯 prompt builders：`build_generalize_rewrite_prompt`、`build_distill_prompt`（含 indexed 转写）。
-      - `parse_distill_response(text) -> Digest`（复用 schemas 四小节）。
-      - `run_feedback_postprocessor(...)`：跑 generalize 多轮 + distill（限长 reshorten 守卫）+ 经 MemStore 写 history 对。
-- [ ] `tests/test_feedback_postprocessor.py`：fake query/judge，验证 generalize 采纳/回退、distill round-trip、限长守卫、pool 落对。
-- [ ] 验证：`.venv/bin/python -m pytest tests/test_feedback_postprocessor.py`。
-- [ ] 收尾：把「live-loop 接线」列为 ③ 的下一步（需 web/sim 跑通才能验证，本轮不盲改 1155 行 runner）。
+- [ ] `history_reader.py`：只读工具集 `HistoryReader`（list_unprocessed / read_digest /
+      read_history(field,offset,limit) / grep_history / read_library）。read_library 用 ast 解析
+      capx/skill_library + atomic_task_library 的签名+docstring（目录不存在→空）。纯，可测。
+- [ ] `proposal.py`：`ProposalCandidate`/`Proposal` schema + `validate_proposal`（机械护栏：
+      source_history 引用真实 id、func_name 合法标识符、粒度启发式拒 put_apple 式绑物体、target 合法、
+      与现有 candidate 去重）+ `write_accepted`（落 .py+.stats.json，含 source_history/created_date）。
+- [ ] `update_planner.py`：tool-loop agent（解析/分发 tool 调用 + max_read_iterations 上限，
+      用 scripted query_fn 可测）；LLM-1 propose / LLM-2 review 角色；`run_update_planner`
+      编排 revise 上限 + 验证 gating + 持久化 + 推进 .processed_history 游标；`should_trigger`。
+- [ ] `tests/test_update_planner.py`：fake agent/scripted query_fn 全程单测。
+- [ ] 验证 pytest；__init__ 导出；commit。
+- 唯一不可在此验证的：真 qwen 模型是否按 tool-call 约定输出（与 ③ sim 同性质，留 seam）。
 
 ## 进展 / 改了什么
 
-- ⓪ 已完成（branch se/storage-scaffold, d33ade6）。本轮在其上做 ③ 的可测核心。
+- ⓪ 完成（d33ade6）。③ 核心完成（991d04a），接线暂挂。本轮做 ④。
 
 ## 还想改什么（收尾归纳）
 
-- ③ 剩余：把 `run_feedback_postprocessor` 接进 async_trial_runner 的 `human_finished` 分支
-  （generalize 复用现有 reset+regenerate+人判机制，只换 prompt 与「只判对错」语义），需起 web/sim 验证。
+- ③ 接线（sim-gated，见上）。⑤ Benchmark Evaluator 依赖 ④ 产出 + integration.md 注入点。
