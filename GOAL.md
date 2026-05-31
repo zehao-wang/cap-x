@@ -51,11 +51,13 @@
 | ④ Update Planner | `04-update-planner.md` | 🔲 | 读 `history_pool` → 写 `mem/func_candidate_pool/` |
 | ⑤ Benchmark Evaluator | `05-benchmark-evaluator.md` | 🔲 | candidate →（批准后）→ 长期 library |
 | ⑥ Heartbeat / Cron | `06-heartbeat-cron.md` | 🔲 | 调度 daily task + 夜间触发 Evaluator |
-| ⓪ 共享存储脚手架（`mem/` schema + config） | `storage.md` / `config.md` | 🔲 | ③④⑤ 的公共前置，建议先做 |
+| ⓪ 共享存储脚手架（`mem/` schema + config） | `storage.md` / `config.md` | ✅ | `capx/self_evolve/`（`config.py` / `schemas.py` / `storage.py`）+ `tests/test_self_evolve_storage.py` |
 
-> ⚠️ 现状提醒：`mem/` 下还没有 `history_pool/` `func_candidate_pool/`；`capx/skill_library/`
-> `capx/atomic_task_library/` 两个模块尚不存在。代码里已有的 `feedback_distill` phase 是 live loop
-> 内折叠 operator guidance 的，**不是** module ③ 的 Experience Distill —— 两者别混淆。
+> ⚠️ 现状提醒：⓪ 已落地——`mem/` 的读写契约在 `capx/self_evolve/`（`MemStore` 按需 lazily 建
+> `history_pool/` `func_candidate_pool/` + `.processed_history`），但 pool 目录本身要等 ③ 真正写入才出现；
+> 长期库 `capx/skill_library/` `capx/atomic_task_library/` 两个模块仍不存在（等 ⑤ 批准后才建）。
+> 代码里已有的 `feedback_distill` phase 是 live loop 内折叠 operator guidance 的，**不是** module ③
+> 的 Experience Distill —— 两者别混淆。
 
 ---
 
