@@ -15,6 +15,7 @@ from __future__ import annotations
 from capx.self_evolve.config import (
     BenchmarkEvalConfig,
     ExperienceDistillConfig,
+    HeartbeatConfig,
     SelfEvolveConfig,
     UpdatePlannerConfig,
 )
@@ -64,6 +65,14 @@ from capx.self_evolve.library_pr import (
     plan_pr,
     stamp_docstring_date,
 )
+from capx.self_evolve.scheduler import (
+    CronSpec,
+    Heartbeat,
+    HeartbeatJob,
+    make_daily_task_job,
+    make_evaluator_job,
+    select_daily_tasks,
+)
 
 __all__ = [
     "SelfEvolveConfig",
@@ -106,4 +115,11 @@ __all__ = [
     "apply_planned_changes",
     "create_library_pr",
     "stamp_docstring_date",
+    "HeartbeatConfig",
+    "CronSpec",
+    "Heartbeat",
+    "HeartbeatJob",
+    "select_daily_tasks",
+    "make_evaluator_job",
+    "make_daily_task_job",
 ]

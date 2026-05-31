@@ -59,17 +59,37 @@ class BenchmarkEvalConfig:
 
 
 @dataclass
+class HeartbeatConfig:
+    """Module ⑥ (Heartbeat / Cron) scheduling layer."""
+
+    # Cron expression for the nightly Benchmark Evaluator (⑤) trigger. Default
+    # 02:00 daily. The schedule *intent* is recorded in ``benchmark_eval.schedule``;
+    # the concrete expression lives here (per docs-se/05 + 06).
+    evaluator_cron: str = "0 2 * * *"
+    # Cron expression for the daily-task heartbeat (hand low-accuracy tasks to the
+    # human-in-the-loop). Default 09:00 daily.
+    daily_task_cron: str = "0 9 * * *"
+    # How many low-accuracy tasks the daily heartbeat hands to the interactive loop.
+    daily_task_count: int = 3
+    # A task counts as "low accuracy" (eligible for the daily heartbeat) when its
+    # success rate is at or below this threshold.
+    low_accuracy_threshold: float = 0.5
+
+
+@dataclass
 class SelfEvolveConfig:
     """Top-level config aggregating every pipeline group."""
 
     experience_distill: ExperienceDistillConfig = field(default_factory=ExperienceDistillConfig)
     update_planner: UpdatePlannerConfig = field(default_factory=UpdatePlannerConfig)
     benchmark_eval: BenchmarkEvalConfig = field(default_factory=BenchmarkEvalConfig)
+    heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
 
     _GROUPS = {
         "experience_distill": ExperienceDistillConfig,
         "update_planner": UpdatePlannerConfig,
         "benchmark_eval": BenchmarkEvalConfig,
+        "heartbeat": HeartbeatConfig,
     }
 
     @classmethod
