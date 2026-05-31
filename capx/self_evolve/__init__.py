@@ -26,6 +26,12 @@ from capx.self_evolve.schemas import (
     slugify_task,
 )
 from capx.self_evolve.storage import MemStore, default_mem_root, make_history_id
+from capx.self_evolve.feedback_postprocessor import (
+    PostprocessResult,
+    distill_experience,
+    generalize_by_rewrite,
+    run_feedback_postprocessor,
+)
 
 __all__ = [
     "SelfEvolveConfig",
@@ -40,4 +46,8 @@ __all__ = [
     "MemStore",
     "default_mem_root",
     "make_history_id",
+    "run_feedback_postprocessor",
+    "generalize_by_rewrite",
+    "distill_experience",
+    "PostprocessResult",
 ]
