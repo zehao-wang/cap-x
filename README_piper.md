@@ -27,7 +27,7 @@ LLM agent 通过代码执行方式驱动机械臂做 pick-and-lift 一类任务�
     └─ PiperRealPickCodeEnv       (多轮 code-exec agent)
   api_servers:
     └─ SAM3 @ 8114 (拉起)
-  LLM: OpenRouter (.openrouterkey) → default Gemini 2.5 Pro
+  LLM: OpenRouter (.openrouterkey) → default Gemini 3.1 Pro (preview)
 ```
 
 核心配置文件：**`env_configs/real/piper_real.yaml`**。改 task 改 prompt 都在这里。

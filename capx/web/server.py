@@ -101,7 +101,7 @@ def _config_family(yaml_path: Path) -> str:
         return "other"
     if "r1pro" in text:
         return "r1pro"
-    if "franka_real" in text:
+    if "franka_real" in text or "piper_real" in text:
         return "real"
     if "libero" in text:
         return "libero"
