@@ -1,0 +1,14 @@
+# RealSense D435if wrist-camera optical-frame pose, expressed in the
+# Piper gripper_base link frame.
+# Solved from 12 auto waypoints using OpenCV CALIB_HAND_EYE_PARK (eye-in-hand).
+# Fixed-board residual std (mm): [1.8, 2.7, 2.1]
+#
+# Drop these directly into env_configs/real/piper_real.yaml as:
+#   piper_wrist_camera_position:    [...]
+#   piper_wrist_camera_rpy_radians: [...]
+#
+# position:    [x, y, z] in metres (gripper_base -> camera optical frame)
+# rpy_radians: [roll, pitch, yaw] extrinsic XYZ, radians
+
+position: [-0.07855946374233966, -0.022203735400062846, 0.03792831830921077]
+rpy_radians: [0.33428645253703915, 0.01905367780734024, 1.4907289824443795]

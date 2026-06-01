@@ -1,0 +1,125 @@
+# Real Agilex PIPER + ZED 2i setup.
+#
+# Prereqs (one-time on this machine):
+#   1. uv sync --extra contactgraspnet --extra piper       # base + GraspNet + CAN/arm SDK
+#   2. Bring up CAN on Linux (Agilex docs + setup_can.sh): sudo /path/to/setup_can.sh
+#   3. A separate conda env `zed_bridge` (python 3.10 + pyzed + numpy<2) created per
+#      robodata_Agilex README; exports ZED_BRIDGE_PYTHON so the subprocess bridge can find it:
+#
+#      export ZED_BRIDGE_PYTHON=$(conda run -n zed_bridge which python)
+#      export PIPER_ZED_BRIDGE=$HOME/Documents/Projects/robodata_Agilex/camera/zed_bridge.py
+#      export PIPER_URDF_PATH=$HOME/Documents/Projects/robodata_Agilex/assets/piper_description/urdf/piper_description.urdf
+#      export PIPER_CAMERA_EXTRINSICS=$HOME/Documents/Projects/cap-x/env_configs/real/piper_zed_extrinsics.yaml
+#
+# Optional ZED tuning (defaults are already sensible — NEURAL depth, 180s open budget):
+#   export PIPER_ZED_DEPTH_MODE=NEURAL          # PERFORMANCE / QUALITY / ULTRA / NEURAL / NEURAL_PLUS
+#   export PIPER_ZED_OPEN_TIMEOUT_SEC=15        # per-attempt sl.Camera.open() timeout
+#   export PIPER_ZED_OPEN_DEADLINE_SEC=180      # total retry budget before giving up
+#
+# Optional wrist RealSense D435/D435i/D435if:
+#   export PIPER_WRIST_CAMERA_SERIAL=0123456789 # only needed when multiple RealSense devices exist
+#   export PIPER_WRIST_CAMERA_POSITION="0 0 0"  # link -> camera optical frame, metres
+#   export PIPER_WRIST_CAMERA_RPY_RADIANS="0 0 0"
+#
+# Run:
+#   uv run --no-sync --active capx/envs/launch.py --config-path env_configs/real/piper_real.yaml
+
+env:
+  _target_: capx.envs.tasks.piper.piper_pick.PiperRealPickCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level: piper_real_low_level
+    privileged: false
+    apis:
+      - PiperRealControlApi
+    # Fixed planner settings for Piper goto_pose:
+    # - planner timesteps is fixed per goto_pose call (no dynamic step count)
+    # - if input target z < piper_min_target_z, goto_pose clamps it to piper_min_target_z
+    piper_planner_timesteps: 20
+    piper_min_target_z: 0.02
+    # ZED 2i scene camera (overrides PIPER_ZED_* env vars when set).
+    # depth_mode: PERFORMANCE / QUALITY / ULTRA / NEURAL / NEURAL_PLUS
+    piper_zed_fps: 30
+    piper_zed_width: 1920
+    piper_zed_height: 1080
+    piper_zed_depth_mode: NEURAL
+    # Optional ZED color controls. Exposure/gain are SDK percent values [0, 100].
+    # Leave unset to keep the camera/bridge defaults.
+    piper_zed_auto_exposure_gain: false
+    piper_zed_exposure: 60
+    piper_zed_gain: 50
+    # Wrist-mounted RealSense D435* observation. Exposes:
+    #   obs["robot0_eye_in_hand"]["images"]["rgb"]
+    #   obs["robot0_eye_in_hand"]["images"]["depth"]
+    #   obs["robot0_eye_in_hand"]["intrinsics"], ["pose"], ["pose_mat"]
+    piper_wrist_camera_enabled: true
+    piper_wrist_camera_serial:
+    piper_wrist_camera_width: 640
+    piper_wrist_camera_height: 480
+    piper_wrist_camera_fps: 30
+    piper_wrist_camera_use_depth: true
+    piper_wrist_camera_link_name: gripper_base
+    # Fixed transform from piper_wrist_camera_link_name to the RealSense color
+    # optical frame. Update these after measuring/calibrating the mount.
+    piper_wrist_camera_position: [-0.07855946374233966, -0.022203735400062846, 0.03792831830921077]
+    piper_wrist_camera_rpy_radians: [0.33428645253703915, 0.01905367780734024, 1.4907289824443795]
+    task_only_prompt: ""
+    prompt: |
+      You are controlling an Agilex PIPER 6-DOF arm with the API described below.
+      All poses are in the robot base frame.
+      The scene ZED is obs["robot0_robotview"]; the wrist RealSense is obs["robot0_eye_in_hand"] when enabled.
+      For pick tasks, call sample_grasp_pose(object_name) — it selects the
+      highest-scoring grasp automatically.
+      For "go home", "reset", "return to zero", "回零", or equivalent requests,
+      call go_home(). It moves all 6 joints to 0 rad. Do not fabricate a
+      cartesian zero pose and pass it to goto_pose.
+      Do not call refresh_point_clouds() unless the user explicitly asks to.
+      You may write python code comments for reasoning but ONLY write the executable Python code and do not write it in code fences.
+      After this code executes, you will be able to get a new observation of the environment and write new code to complete the task if needed.
+      The functions (APIs) below are already imported to the environment. If you want to use numpy, you need to import it explicitly.
+      The user will provide the task instruction at runtime. If no task has been given yet, respond with exactly 'FINISH' and wait for the user.
+
+    multi_turn_prompt: |
+      The following code blocks were just executed:
+      ```python
+      {executed_code}
+      ```
+      The current console stdout is:
+      ```
+      {console_stdout}
+      ```
+      The current console stderr is:
+      ```
+      {console_stderr}
+      ```
+      If there were no errors during compilation or execution, the console stderr will be empty. If there were errors, consider regenerating the code.
+      Please respond with EXACTLY ONE of the following:
+      - The word 'REGENERATE' followed immediately by new Python code in a fenced code block (```python...```) if you want to modify the code.
+      - The word 'FINISH' if the task appears to be complete
+
+# SAM3 for segmentation + Contact-GraspNet for grasp planning. IK runs
+# in-process via pyroki with the local PIPER URDF.
+# Requires `uv sync --extra contactgraspnet` for the GraspNet server.
+api_servers:
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    device: cuda
+    port: 8115
+    host: 127.0.0.1
+
+record_video: true
+use_wrist_camera: true
+use_img_differencing: true
+use_parallel_ensemble: true
+use_multimodel: true
+output_dir: ./outputs/piper_real
+debug: true
+
+web_ui: true
+# web_ui_port: 8200
+
+trials: 1
+num_workers: 1

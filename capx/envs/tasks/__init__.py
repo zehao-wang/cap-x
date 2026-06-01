@@ -167,6 +167,16 @@ register_config(
     ),
 )
 
+from .piper.piper_pick import PiperRealPickCodeEnv
+register_exec_env("piper_real_code_env", PiperRealPickCodeEnv)
+register_config(
+    "piper_real_code_env",
+    CodeExecEnvConfig(
+        low_level="piper_real_low_level",
+        apis=["PiperRealControlApi"],
+    ),
+)
+
 from .r1pro.r1pro_pickup_radio import R1ProRadioCodeEnv
 register_exec_env("r1pro_radio_code_env", R1ProRadioCodeEnv)
 register_config(

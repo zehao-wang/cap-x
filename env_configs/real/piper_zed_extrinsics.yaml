@@ -1,0 +1,9 @@
+# ZED 2i pose in the Agilex PIPER base frame.
+# Solved from 12 auto waypoints using OpenCV CALIB_HAND_EYE_PARK (eye-to-hand).
+# Board-on-gripper residual std (mm): [2.7, 2.2, 2.1]
+#
+# position:    [x, y, z] in metres
+# rpy_radians: [roll, pitch, yaw] extrinsic XYZ, radians
+
+position: [-0.564570753218529, -0.2675600119263705, 0.687737758279423]
+rpy_radians: [-2.407023111207983, -0.036883360663633846, -1.544073351817605]

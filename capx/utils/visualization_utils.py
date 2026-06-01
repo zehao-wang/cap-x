@@ -79,6 +79,63 @@ def overlay_segmentation_masks(
     return output
 
 
+def draw_detections(
+    image: np.ndarray,
+    detections: list[dict],
+    opacity: float = 0.5,
+) -> np.ndarray:
+    """Overlay segmentation masks + bounding boxes + labels with scores.
+
+    Args:
+        image: (H, W, 3) uint8 RGB image.
+        detections: List of dicts each with keys:
+            ``"mask"`` (H, W bool, optional), ``"box"`` ([x1, y1, x2, y2],
+            optional), ``"label"`` (str, optional), ``"score"`` (float, optional).
+            Up to 5 detections are drawn (palette has 5 colors).
+        opacity: Mask fill blend factor (0–1).
+
+    Returns:
+        (H, W, 3) uint8 image with detections overlaid.
+    """
+    output = image.copy()
+    for i, det in enumerate(detections[:5]):
+        colors = _PALETTE_HEX[i]
+        fill_rgb = _hex_to_rgb(colors["fill"])
+        border_rgb = _hex_to_rgb(colors["border"])
+
+        mask = det.get("mask")
+        if mask is not None:
+            mask_idx = np.where(mask)
+            roi = output[mask_idx[0], mask_idx[1]]
+            blended = (opacity * roi + (1 - opacity) * np.array(fill_rgb)).astype(np.uint8)
+            output[mask_idx[0], mask_idx[1]] = blended
+            mask_uint8 = mask.astype(np.uint8) * 255
+            contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(output, contours, -1, border_rgb, thickness=2)
+
+        box = det.get("box")
+        if box is not None:
+            x1, y1, x2, y2 = (int(v) for v in box)
+            cv2.rectangle(output, (x1, y1), (x2, y2), border_rgb, 2)
+
+            label = det.get("label", "")
+            score = det.get("score")
+            if score is not None:
+                text = f"{label} {score:.2f}" if label else f"{score:.2f}"
+            else:
+                text = label
+            if text:
+                (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                ty = max(y1 - 4, th + 4)
+                cv2.rectangle(output, (x1, ty - th - 4), (x1 + tw + 4, ty), border_rgb, -1)
+                cv2.putText(
+                    output, text, (x1 + 2, ty - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA,
+                )
+
+    return output
+
+
 # ---------------------------------------------------------------------------
 # Oriented bounding box
 # ---------------------------------------------------------------------------

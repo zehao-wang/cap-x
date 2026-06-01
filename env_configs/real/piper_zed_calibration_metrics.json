@@ -1,0 +1,241 @@
+{
+  "success": true,
+  "valid_detections": 12,
+  "total_waypoints": 12,
+  "output_yaml": "/home/zwa0839/Documents/Projects/cap-x/env_configs/real/piper_zed_extrinsics.yaml",
+  "poses_json": "/home/zwa0839/Documents/Projects/cap-x/env_configs/real/piper_zed_calibration_poses.json",
+  "pose_results": [
+    {
+      "index": 0,
+      "name": "pose_01",
+      "used": true,
+      "capture_index": 0,
+      "gripper_xyz_m": [
+        0.002421,
+        -0.06443,
+        0.36808599999999997
+      ],
+      "board_xyz_in_cam_m": [
+        0.014686838539992073,
+        -0.2428139510888055,
+        0.731663081578676
+      ],
+      "residual_mm": 2.9449297772638228
+    },
+    {
+      "index": 1,
+      "name": "pose_02",
+      "used": true,
+      "capture_index": 1,
+      "gripper_xyz_m": [
+        0.00681,
+        -0.11398699999999999,
+        0.37312399999999996
+      ],
+      "board_xyz_in_cam_m": [
+        0.0859534599396672,
+        -0.1778885007325757,
+        0.6593913018092914
+      ],
+      "residual_mm": 2.3262814240689185
+    },
+    {
+      "index": 2,
+      "name": "pose_03",
+      "used": true,
+      "capture_index": 2,
+      "gripper_xyz_m": [
+        0.041775,
+        -0.26174,
+        0.299385
+      ],
+      "board_xyz_in_cam_m": [
+        0.21305047816061487,
+        -0.0788257481599287,
+        0.6604409603107924
+      ],
+      "residual_mm": 3.9213785680352555
+    },
+    {
+      "index": 3,
+      "name": "pose_04",
+      "used": true,
+      "capture_index": 3,
+      "gripper_xyz_m": [
+        0.03234,
+        -0.376928,
+        0.253025
+      ],
+      "board_xyz_in_cam_m": [
+        0.286845920640707,
+        0.0006075748087395805,
+        0.6342950533526613
+      ],
+      "residual_mm": 6.009766482892092
+    },
+    {
+      "index": 4,
+      "name": "pose_05",
+      "used": true,
+      "capture_index": 4,
+      "gripper_xyz_m": [
+        -0.048687999999999995,
+        -0.327036,
+        0.20478
+      ],
+      "board_xyz_in_cam_m": [
+        0.16409503114303894,
+        0.15485932817670592,
+        0.6315711129342195
+      ],
+      "residual_mm": 5.708367077215435
+    },
+    {
+      "index": 5,
+      "name": "pose_06",
+      "used": true,
+      "capture_index": 5,
+      "gripper_xyz_m": [
+        -0.07128899999999999,
+        -0.257986,
+        0.443953
+      ],
+      "board_xyz_in_cam_m": [
+        0.13627862398927312,
+        -0.018997100411844794,
+        0.4269742512998118
+      ],
+      "residual_mm": 3.419283860820548
+    },
+    {
+      "index": 6,
+      "name": "pose_07",
+      "used": true,
+      "capture_index": 6,
+      "gripper_xyz_m": [
+        -0.115185,
+        -0.10782499999999999,
+        0.37610099999999996
+      ],
+      "board_xyz_in_cam_m": [
+        2.165937100827407e-05,
+        0.004975501119367499,
+        0.4084749224239674
+      ],
+      "residual_mm": 2.5793676372919365
+    },
+    {
+      "index": 7,
+      "name": "pose_08",
+      "used": true,
+      "capture_index": 7,
+      "gripper_xyz_m": [
+        -0.080375,
+        -0.055242,
+        0.27097299999999996
+      ],
+      "board_xyz_in_cam_m": [
+        -0.05895245669958021,
+        0.06308533729979342,
+        0.5246079210768235
+      ],
+      "residual_mm": 3.775616730301497
+    },
+    {
+      "index": 8,
+      "name": "pose_09",
+      "used": true,
+      "capture_index": 8,
+      "gripper_xyz_m": [
+        -0.0070599999999999994,
+        -0.0336,
+        0.349925
+      ],
+      "board_xyz_in_cam_m": [
+        -0.03633341272015187,
+        -0.115442742552543,
+        0.7461895388709749
+      ],
+      "residual_mm": 3.421939471034963
+    },
+    {
+      "index": 9,
+      "name": "pose_10",
+      "used": true,
+      "capture_index": 9,
+      "gripper_xyz_m": [
+        -0.06846,
+        -0.018944,
+        0.281499
+      ],
+      "board_xyz_in_cam_m": [
+        -0.028648191061729614,
+        -0.017100723087560957,
+        0.5871702162641173
+      ],
+      "residual_mm": 5.244549892136171
+    },
+    {
+      "index": 10,
+      "name": "pose_11",
+      "used": true,
+      "capture_index": 10,
+      "gripper_xyz_m": [
+        -0.036586,
+        0.013665,
+        0.267524
+      ],
+      "board_xyz_in_cam_m": [
+        -0.21753912699103914,
+        0.0885849769525407,
+        0.558268485215739
+      ],
+      "residual_mm": 3.615673462930992
+    },
+    {
+      "index": 11,
+      "name": "pose_12",
+      "used": true,
+      "capture_index": 11,
+      "gripper_xyz_m": [
+        -0.0277,
+        -0.074362,
+        0.20033099999999998
+      ],
+      "board_xyz_in_cam_m": [
+        0.03524690625898613,
+        -0.005973950661595083,
+        0.7073944930613165
+      ],
+      "residual_mm": 3.717401721508429
+    }
+  ],
+  "parameters": {
+    "board": "checkerboard",
+    "cols": 4,
+    "rows": 5,
+    "square_m": 0.02,
+    "marker_m": 0.015,
+    "settle_sec": 2.0,
+    "detect_timeout_sec": 2.5,
+    "joint_tolerance_rad": 0.025,
+    "max_move_steps": 600
+  },
+  "position_m": [
+    -0.564570753218529,
+    -0.2675600119263705,
+    0.687737758279423
+  ],
+  "rpy_radians": [
+    -2.407023111207983,
+    -0.036883360663633846,
+    -1.544073351817605
+  ],
+  "residual_std_xyz_mm": [
+    2.690699862048225,
+    2.209884345235844,
+    2.069415462598103
+  ],
+  "residual_rms_mm": 4.05042404246579,
+  "residual_max_mm": 6.009766482892092
+}

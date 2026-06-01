@@ -1,0 +1,3 @@
+我现在的需求是，我希望用这个cap-x agent来操控我的机械臂，这个机械臂是 Agilex Piper，它的sdk调用方式可以参考 /home/zwa0839/Documents/Projects/robodata_Agilex 这个里面。然后我的camera 是 zed2i 我有个环境zed_bridge 专门用于驱动zed2相机。
+
+我现在只执行了readme里最基本的安装，到uv sync。其他都没装。我不需要simulation env来测试，我希望直接实机。bubu

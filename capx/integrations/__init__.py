@@ -117,6 +117,12 @@ register_api("FrankaRealReducedSkillLibraryControlApi", lambda env: FrankaContro
 register_api("FrankaRealControlApi", lambda env: FrankaControlApi(env, tcp_offset=[0.0, 0.0, -0.157], real = True))
 
 try:
+    from .piper.control import PiperControlApi
+    register_api("PiperRealControlApi", PiperControlApi)
+except ImportError:
+    print("Piper control API not available (check URDF / pyroki install).")
+
+try:
     from .r1pro.control import R1ProControlApi
     register_api("R1ProControlApi", lambda env: R1ProControlApi(env, use_sam3=True))
 except ImportError:

@@ -1,13 +1,31 @@
 # import all environments here to register them!
+import importlib.util as _ilu
+
 from capx.envs.base import list_envs, register_env
+
+
+def _has(*modules: str) -> bool:
+    return all(_ilu.find_spec(m) is not None for m in modules)
 
 
 from .franka_real import FrankaRealLowLevel
 register_env("franka_real_low_level", FrankaRealLowLevel)
 
+# Real Agilex PIPER arm (needs piper_sdk + python-can on the host).
+if _has("piper_sdk", "can"):
+    from .piper_real import PiperRealLowLevel
+    register_env("piper_real_low_level", PiperRealLowLevel)
+
+# Service-client variant: talks to launch_piper_state_service over websockets,
+# so the agent process needs neither piper_sdk nor pyrealsense2 — just websockets.
+if _has("websockets"):
+    from .piper_real_service_client import PiperRealServiceClient
+    register_env("piper_real_service_client", PiperRealServiceClient)
+
 # NOTE: Can only have one of Robosuite or LIBERO installed at a time!
 # Using Robosuite run: uv sync --extra robosuite
-try:
+# Gate on a robosuite-1.5-only submodule so the LIBERO venv (robosuite 1.4 fork) skips this block.
+if _has("robosuite.controllers.composite"):
     from .robosuite_cube_lift import FrankaRobosuiteCubeLiftLowLevel
     from .robosuite_cubes import FrankaRobosuiteCubesLowLevel
     from .robosuite_cubes_restack import FrankaRobosuiteCubesRestackLowLevel
@@ -22,20 +40,15 @@ try:
     register_env("franka_robosuite_cubes_restack_low_level", FrankaRobosuiteCubesRestackLowLevel)
     register_env("franka_robosuite_spill_wipe_low_level", FrankaRobosuiteSpillWipeLowLevel)
 
-
     register_env("franka_robosuite_nut_assembly_low_level", FrankaRobosuiteNutAssembly)
     register_env("franka_robosuite_nut_assembly_low_level_visual", FrankaRobosuiteNutAssemblyVisual)
 
     register_env("two_arm_handover_robosuite", RobosuiteHandoverEnv)
     register_env("two_arm_lift_robosuite", RobosuiteTwoArmLiftEnv)
-except Exception:
-    import traceback
-    print("Robosuite not installed!")
-    traceback.print_exc()
 
 # NOTE: Can only have one of LIBERO or Robosuite installed at a time!
 # Using LIBERO run: uv sync --extra libero --extra contactgraspnet
-try:
+if _has("libero"):
     from .libero import FrankaLiberoOpenMicrowave, FrankaLiberoPickPlace, FrankaLiberoPickAlphabetSoup, FrankaLiberoTask
 
     register_env("franka_libero_pick_place_low_level", FrankaLiberoPickPlace)
@@ -56,15 +69,7 @@ try:
         for _tid in range(_n):
             _name = f"franka_libero_{_suite}_{_tid}_low_level"
             register_env(_name, functools.partial(FrankaLiberoTask, suite_name=_suite, task_id=_tid))
-except Exception:
-    # import traceback
-    print("LIBERO not installed!")
-    # traceback.print_exc()
 
-try:
+if _has("omnigibson"):
     from .r1pro_b1k import R1ProBehaviourLowLevel
     register_env("r1pro_b1k_low_level", R1ProBehaviourLowLevel)
-except Exception:
-    # import traceback
-    print("R1Pro not installed!")
-    # traceback.print_exc()

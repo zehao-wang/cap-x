@@ -53,6 +53,32 @@ class CodeExecEnvConfig:
     privileged: bool = False
     enable_render: bool = True
     viser_debug: bool = False
+    # Optional runtime knobs forwarded to low-level env / APIs.
+    # These are primarily used by real-robot setups (e.g., Piper).
+    piper_planner_timesteps: int | None = None
+    piper_min_target_z: float | None = None
+    piper_wrist_camera_enabled: bool | None = None
+    piper_wrist_camera_serial: str | None = None
+    piper_wrist_camera_fps: int | None = None
+    piper_wrist_camera_width: int | None = None
+    piper_wrist_camera_height: int | None = None
+    piper_wrist_camera_use_depth: bool | None = None
+    piper_wrist_camera_link_name: str | None = None
+    piper_wrist_camera_position: list[float] | None = None
+    piper_wrist_camera_rpy_radians: list[float] | None = None
+    # ZED 2i scene camera knobs (override the env-var defaults baked into
+    # PiperRealLowLevel; see piper_real.yaml for examples).
+    piper_zed_fps: int | None = None
+    piper_zed_width: int | None = None
+    piper_zed_height: int | None = None
+    piper_zed_depth_mode: str | None = None
+    piper_zed_auto_exposure_gain: bool | None = None
+    piper_zed_exposure: int | None = None
+    piper_zed_gain: int | None = None
+    # When set, the Piper low-level env runs in service-client mode and
+    # connects to launch_piper_state_service over websockets instead of
+    # opening CAN/cameras locally.
+    piper_state_service_url: str | None = None
 
 
 class SimpleExecutor:
@@ -91,9 +117,47 @@ class CodeExecutionEnvBase(Env):
     def __init__(self, cfg: CodeExecEnvConfig) -> None:
         super().__init__()
         self.cfg = cfg
+        low_level_kwargs = {
+            "wrist_camera_enabled": cfg.piper_wrist_camera_enabled,
+            "wrist_camera_serial": cfg.piper_wrist_camera_serial,
+            "wrist_camera_fps": cfg.piper_wrist_camera_fps,
+            "wrist_camera_width": cfg.piper_wrist_camera_width,
+            "wrist_camera_height": cfg.piper_wrist_camera_height,
+            "wrist_camera_use_depth": cfg.piper_wrist_camera_use_depth,
+            "wrist_camera_link_name": cfg.piper_wrist_camera_link_name,
+            "wrist_camera_position": (
+                tuple(cfg.piper_wrist_camera_position)
+                if cfg.piper_wrist_camera_position is not None
+                else None
+            ),
+            "wrist_camera_rpy_radians": (
+                tuple(cfg.piper_wrist_camera_rpy_radians)
+                if cfg.piper_wrist_camera_rpy_radians is not None
+                else None
+            ),
+            "zed_fps": cfg.piper_zed_fps,
+            "zed_width": cfg.piper_zed_width,
+            "zed_height": cfg.piper_zed_height,
+            "zed_depth_mode": cfg.piper_zed_depth_mode,
+            "zed_auto_exposure_gain": cfg.piper_zed_auto_exposure_gain,
+            "zed_exposure": cfg.piper_zed_exposure,
+            "zed_gain": cfg.piper_zed_gain,
+        }
+        if cfg.piper_state_service_url is not None:
+            low_level_kwargs["service_url"] = str(cfg.piper_state_service_url)
+        low_level_kwargs = {k: v for k, v in low_level_kwargs.items() if v is not None}
         self.low_level_env: BaseEnv = self._build_low_level(
-            cfg.low_level, cfg.privileged, cfg.enable_render, cfg.viser_debug
+            cfg.low_level,
+            cfg.privileged,
+            cfg.enable_render,
+            cfg.viser_debug,
+            **low_level_kwargs,
         )  # type: ignore[assignment]
+        # Forward optional per-task runtime knobs to the low-level env object.
+        if cfg.piper_planner_timesteps is not None:
+            setattr(self.low_level_env, "piper_planner_timesteps", int(cfg.piper_planner_timesteps))
+        if cfg.piper_min_target_z is not None:
+            setattr(self.low_level_env, "piper_min_target_z", float(cfg.piper_min_target_z))
         # Create APIs once; maximize sharing inside a worker via lru_cache in get_api
         self._apis: dict[str, ApiBase] = {n: get_api(n)(self.low_level_env) for n in cfg.apis}
         # for api in self._apis.values():
@@ -233,7 +297,12 @@ class CodeExecutionEnvBase(Env):
         self._exec_globals = g
 
     def _build_low_level(
-        self, src: Env | str, privileged: bool = False, enable_render: bool = True, viser_debug: bool = False
+        self,
+        src: Env | str,
+        privileged: bool = False,
+        enable_render: bool = True,
+        viser_debug: bool = False,
+        **kwargs: Any,
     ) -> BaseEnv:
         """
         Builds the low level environment from the given source.
@@ -249,7 +318,13 @@ class CodeExecutionEnvBase(Env):
                     return cfg_instantiate(cfg)  # type: ignore[no-any-return]
                 return cfg  # type: ignore[return-value]
             else:
-                return get_env(src, privileged=privileged, enable_render=enable_render, viser_debug=viser_debug)
+                return get_env(
+                    src,
+                    privileged=privileged,
+                    enable_render=enable_render,
+                    viser_debug=viser_debug,
+                    **kwargs,
+                )
         return src
 
     def _get_observation(self) -> dict[str, Any]:
