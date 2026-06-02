@@ -153,8 +153,9 @@
 ### 硬件
 
 - **机械臂**：AgileX Piper 6-DOF，CAN 总线驱动（`piper_sdk`）。
-- **场景相机**：**ZED 2i** → `obs["robot0_robotview"]`（RGB + depth + 内参 + 外参）。
-  外参（base 系位姿）由 cap-x 标定文件 `env_configs/real/piper_zed_extrinsics.yaml` 提供，不来自服务。
+- **场景相机**：**ZED 2i** → `obs["robot0_robotview"]`（RGB + depth + 内参 + 外参）。normal flow 下 RGB+depth+内参
+  **只来自独立 ZED 服务**（见下），相机参数归服务侧，不在 task yaml 配。外参（base 系位姿）由 cap-x 标定文件
+  `env_configs/real/piper_zed_extrinsics.yaml` 提供，不来自服务。
 - **腕部相机（可选）**：RealSense D435* → `obs["robot0_eye_in_hand"]`（cap-x 本地直连）。
 - 落地配置：`env_configs/real/piper_real.yaml`（本地）/ `piper_real_service.yaml`（机械臂状态走服务）。
 
@@ -177,7 +178,11 @@
   （`zed_depth_service.py` + `run_zed_service.sh`，用 raiden venv 跑 pyzed + TRI-Stereo）。线格式 v1 +
   就绪自检 + 干净退出已写好；loopback（真 client）+ 真 TRI-Stereo backend 加载均已验证。**卡在缺真机/显示器**
   —— 还差真开相机常驻跑一次。
-- ✅ **cap-x 侧瘦客户端 + 接线**：只读、UDS、心跳等待；经 config `piper_zed_source: service|bridge`
-  选择，**默认 `bridge`**（不破坏现有本地流 + 标定脚本），服务就绪后切 `service`。（实现/测试细节见 `Short-Term-GOAL.md`）
+- ✅ **cap-x 侧瘦客户端 + 接线**：只读、UDS、心跳等待；经 config `piper_zed_source: service|bridge` 选择。
+- ✅ **normal flow 收口为 service-only**（commit `4c7a62f`）：`piper_real.yaml` 已设 `piper_zed_source: service`
+  + `piper_zed_service_socket`，并**删掉 yaml 控相机参数的能力**（fps/分辨率/depth_mode/曝光增益）——这些归服务侧 owner，
+  cap-x 不再能从 task yaml 调相机。端到端拆掉 yaml→bridge 调参链路（base.py / piper_real.py / setup.py /
+  launch_piper_state_service.py），state service 也跟 yaml 走 service。`_Zed2iBridge` 与 bridge 分支仅保留给
+  **标定脚本**（直接构造、读 `PIPER_ZED_*` env）。（细节见 `Short-Term-GOAL.md`）
 - 🔲 **Piper 实机交互闭环跑通**：本地实机 + OpenRouter Gemini（**不用 qwen3.6**）。
 - ✅ **已撤销**「在 cap-x 内跑 TRI-Stereo」的旧做法，深度全部移到服务侧（cap-x 不持有任何深度模型/依赖）。
