@@ -130,14 +130,14 @@ pgrep -af openrouter_server || \
 ### 1. 起 CAN
 
 ```bash
-sudo bash scripts/setup_can.sh
+sudo bash scripts_realbot/setup_can.sh
 # 输出列出的接口里应该有你的 canN 且是 UP
 ```
 
 ### 2. 确认哪根 canN 是你要的臂
 
 ```bash
-uv run --no-sync --active scripts/piper_identify_arms.py
+uv run --no-sync --active scripts_realbot/piper_identify_arms.py
 # 手动晃一下要用的那条臂，看哪个 canN 的数值在变
 ```
 
@@ -148,14 +148,14 @@ uv run --no-sync --active scripts/piper_identify_arms.py
 cap-x 驱动的臂必须是 **slave 模式**（master 模式不响应 JointCtrl）：
 
 ```bash
-uv run --no-sync --active scripts/piper_set_mode.py --channel can1 --mode slave
+uv run --no-sync --active scripts_realbot/piper_set_mode.py --channel can1 --mode slave
 # 如果是从 master 切到 slave，需要给机械臂断电重启一次
 ```
 
 ### 4. 一次外参 sanity check（推荐）
 
 ```bash
-uv run --no-sync --active scripts/cam_calibration/piper_visualize_zed_extrinsics.py
+uv run --no-sync --active scripts_realbot/cam_calibration/piper_visualize_zed_extrinsics.py
 ```
 
 打开 http://localhost:8201，确认：
@@ -164,7 +164,7 @@ uv run --no-sync --active scripts/cam_calibration/piper_visualize_zed_extrinsics
 - frustum 画面实时刷新，画面内容 ≈ ZED 指向的方向
 
 外参错了后面全是空谈。详细验证方法见
-[`scripts/cam_calibration/piper_zed_calibration.md`](scripts/cam_calibration/piper_zed_calibration.md)。
+[`scripts_realbot/cam_calibration/piper_zed_calibration.md`](scripts_realbot/cam_calibration/piper_zed_calibration.md)。
 
 ---
 
@@ -173,10 +173,10 @@ uv run --no-sync --active scripts/cam_calibration/piper_visualize_zed_extrinsics
 **每次物理挪动 ZED 都要重标。**
 
 ```bash
-uv run --no-sync --active scripts/cam_calibration/piper_calibrate_zed_extrinsics.py
+uv run --no-sync --active scripts_realbot/cam_calibration/piper_calibrate_zed_extrinsics.py
 ```
 
-完整步骤、残差判定、避坑指南：**[`scripts/cam_calibration/piper_zed_calibration.md`](scripts/cam_calibration/piper_zed_calibration.md)**。
+完整步骤、残差判定、避坑指南：**[`scripts_realbot/cam_calibration/piper_zed_calibration.md`](scripts_realbot/cam_calibration/piper_zed_calibration.md)**。
 
 关键点速记：
 - 标定板**刚性固定在夹爪上**（关键）
@@ -264,7 +264,7 @@ open_gripper() / close_gripper()
 
 | 步 | 命令 | 验证什么 |
 |---|---|---|
-| 1 | `scripts/cam_calibration/piper_visualize_zed_extrinsics.py` | URDF/CAN、ZED、外参 |
+| 1 | `scripts_realbot/cam_calibration/piper_visualize_zed_extrinsics.py` | URDF/CAN、ZED、外参 |
 | 2 | 手写 5 行调 `PiperControlApi.get_object_pose("red cube")` | SAM3 感知 |
 | 3 | 手写调 `sample_grasp_pose` + `goto_pose(..., z_approach=0.15)` 不夹 | IK + 执行 + 外参一致性 |
 | 4 | 手写完整 pick-and-lift 序列 | 整条无 agent 流程 |
@@ -282,7 +282,7 @@ open_gripper() / close_gripper()
 |---|---|---|
 | `setup_can.sh` 报 "no candleLight adapter" | USB 没插 / 没识别 | `lsusb` 看 `1d50:606f`；换口 |
 | `ConnectPort()` 卡住 | canN 没 UP / 另一个进程占用 | `ip -brief link show`；`sudo ip link set can1 down && up` |
-| 发命令臂不动 | 在 master 模式 | `scripts/piper_set_mode.py --mode slave`，断电重启 |
+| 发命令臂不动 | 在 master 模式 | `scripts_realbot/piper_set_mode.py --mode slave`，断电重启 |
 | 关节读数对但 goto_pose 不动 | 同上 | 同上 |
 
 ### ZED
@@ -297,7 +297,7 @@ open_gripper() / close_gripper()
 | 症状 | 原因 | 修法 |
 |---|---|---|
 | agent 抓取偏几 cm | 外参残差 > 10 mm | 重标；或者用更大物体 |
-| `from_matrix` det<0 报错 | 板子没固定 / 旋转多样性差 | 参见 `scripts/cam_calibration/piper_zed_calibration.md` |
+| `from_matrix` det<0 报错 | 板子没固定 / 旋转多样性差 | 参见 `scripts_realbot/cam_calibration/piper_zed_calibration.md` |
 | viser frustum 位置完全错 | `rpy_radians` 约定搞反了 | 必须是 extrinsic 小写 `"xyz"` |
 | goto_pose 报 IK 失败 | 目标超出工作空间 | 打印 `pos` 查合理性；`z_approach` 加大 |
 
@@ -321,9 +321,9 @@ open_gripper() / close_gripper()
 - `capx/integrations/piper/control.py` — `PiperControlApi`（agent 调用的函数）
 - `capx/envs/tasks/piper/piper_pick.py` — Code-exec task env
 - `capx/envs/launch.py` — agent 启动入口
-- `scripts/cam_calibration/piper_calibrate_zed_extrinsics.py` — 外参标定
-- `scripts/cam_calibration/piper_visualize_zed_extrinsics.py` — 外参可视化
-- `scripts/cam_calibration/piper_zed_calibration.md` — 标定详细流程
-- `scripts/piper_identify_arms.py` — canN ↔ 物理臂映射
-- `scripts/piper_set_mode.py` — master/slave 模式切换
-- `scripts/setup_can.sh` — CAN 初始化
+- `scripts_realbot/cam_calibration/piper_calibrate_zed_extrinsics.py` — 外参标定
+- `scripts_realbot/cam_calibration/piper_visualize_zed_extrinsics.py` — 外参可视化
+- `scripts_realbot/cam_calibration/piper_zed_calibration.md` — 标定详细流程
+- `scripts_realbot/piper_identify_arms.py` — canN ↔ 物理臂映射
+- `scripts_realbot/piper_set_mode.py` — master/slave 模式切换
+- `scripts_realbot/setup_can.sh` — CAN 初始化

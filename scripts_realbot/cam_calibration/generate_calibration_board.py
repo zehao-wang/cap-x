@@ -28,14 +28,14 @@ something flat (foam-board, acrylic, hard cardboard).
 Usage
 -----
     # Default 100x120 mm checkerboard, 20 mm squares (4x5 inner corners):
-    uv run --no-sync --active scripts/cam_calibration/generate_calibration_board.py
+    uv run --no-sync --active scripts_realbot/cam_calibration/generate_calibration_board.py
 
     # ChArUco variant, same physical size:
-    uv run --no-sync --active scripts/cam_calibration/generate_calibration_board.py \\
+    uv run --no-sync --active scripts_realbot/cam_calibration/generate_calibration_board.py \\
         --board charuco --marker 15
 
     # Custom: 6x8 squares of 15 mm = 90x120 mm board:
-    uv run --no-sync --active scripts/cam_calibration/generate_calibration_board.py \\
+    uv run --no-sync --active scripts_realbot/cam_calibration/generate_calibration_board.py \\
         --squares-x 6 --squares-y 8 --square 15
 """
 from __future__ import annotations

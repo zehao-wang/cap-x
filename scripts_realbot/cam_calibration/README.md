@@ -25,7 +25,7 @@
 ### 0. 一次性：打印标定板
 
 ```bash
-uv run --no-sync --active scripts/cam_calibration/generate_calibration_board.py
+uv run --no-sync --active scripts_realbot/cam_calibration/generate_calibration_board.py
 ```
 
 产物在 `data/calib_boards/` 下（PNG + PDF）。打印步骤：
@@ -53,7 +53,7 @@ calib flags:  --cols 4  --rows 5  --square 0.0200
 ### 1. 手动按钮标定（推荐）
 
 ```bash
-uv run --no-sync --active scripts/cam_calibration/piper_calibrate_zed_extrinsics_auto.py
+uv run --no-sync --active scripts_realbot/cam_calibration/piper_calibrate_zed_extrinsics_auto.py
 ```
 
 脚本不会自己动机械臂——你自己用手拖着走点位，按按钮采集。
@@ -104,7 +104,7 @@ uv run --no-sync --active scripts/cam_calibration/piper_calibrate_zed_extrinsics
 受限），可以退回到完全手动版：
 
 ```bash
-uv run --no-sync --active scripts/cam_calibration/piper_calibrate_zed_extrinsics.py
+uv run --no-sync --active scripts_realbot/cam_calibration/piper_calibrate_zed_extrinsics.py
 ```
 
 自己摆好每个姿态，按 ENTER 采集，用法见 [`piper_zed_calibration.md`](piper_zed_calibration.md)。
@@ -114,7 +114,7 @@ uv run --no-sync --active scripts/cam_calibration/piper_calibrate_zed_extrinsics
 任何时候想确认外参是否还正确（没人动过相机），不用重标：
 
 ```bash
-uv run --no-sync --active scripts/cam_calibration/piper_visualize_zed_extrinsics.py
+uv run --no-sync --active scripts_realbot/cam_calibration/piper_visualize_zed_extrinsics.py
 ```
 
 打开 http://localhost:8201 三个肉眼检查：

@@ -18,12 +18,12 @@
 #   4. export the real-robot env vars (README_piper §3):
 #        ZED_BRIDGE_PYTHON  PIPER_ZED_BRIDGE  PIPER_URDF_PATH  PIPER_CAMERA_EXTRINSICS
 #        PIPER_CAN_CHANNEL / PIPER_CAN_INTERFACE / PIPER_CAN_BITRATE (CAN link)
-#   5. Bring CAN up:  sudo scripts/setup_can.sh
+#   5. Bring CAN up:  sudo scripts_realbot/setup_can.sh
 #   6. Build the web-UI once (and after any web-ui edit):
 #        .venv/bin/python -c 'from capx.envs.launch import _ensure_frontend_built; _ensure_frontend_built()'
 #
 # Run:
-#   bash scripts/run_agent0_piper_interactive.sh [config_yaml]
+#   bash scripts_realbot/run_agent0_piper_interactive.sh [config_yaml]
 # Then open http://localhost:8200 in your browser (Viser 3D is reverse-proxied
 # through the same port — no extra forward needed when local).
 

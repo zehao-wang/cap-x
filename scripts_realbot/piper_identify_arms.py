@@ -9,7 +9,7 @@ Set `PIPER_CAN_CHANNEL` in ~/.bashrc (or pass `--can-channel` at runtime) to
 that interface and you're done.
 
 Usage:
-    uv run --no-sync --active scripts/piper_identify_arms.py
+    uv run --no-sync --active scripts_realbot/piper_identify_arms.py
     # Ctrl-C to stop.
 """
 from __future__ import annotations
@@ -73,7 +73,7 @@ def main():
 
     ifaces = list_up_can_ifaces()
     if not ifaces:
-        print("No UP canN interface found. Run: bash scripts/setup_can.sh first.")
+        print("No UP canN interface found. Run: bash scripts_realbot/setup_can.sh first.")
         sys.exit(1)
     print(f"Connecting to: {', '.join(ifaces)}")
 

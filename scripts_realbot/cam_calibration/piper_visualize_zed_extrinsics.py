@@ -11,7 +11,7 @@ Use this to sanity-check a calibration without re-running the capture loop.
 
 Example
 -------
-    uv run --no-sync --active scripts/cam_calibration/piper_visualize_zed_extrinsics.py
+    uv run --no-sync --active scripts_realbot/cam_calibration/piper_visualize_zed_extrinsics.py
 """
 from __future__ import annotations
 

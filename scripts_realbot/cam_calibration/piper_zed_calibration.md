@@ -10,7 +10,7 @@
 
 ## 1. 硬件准备
 
-- **标定板**：用 `scripts/cam_calibration/generate_calibration_board.py`
+- **标定板**：用 `scripts_realbot/cam_calibration/generate_calibration_board.py`
   生成默认的 **5×6 格 20 mm 方格棋盘**（板尺寸 100×120 mm，内角 4×5），
   打印后贴在硬板（亚克力 / 泡沫板 / 硬纸板）上。其它尺寸用
   `--cols/--rows/--square` 覆盖。
@@ -25,7 +25,7 @@
 ## 2. 采集 + 求解
 
 ```bash
-uv run --no-sync --active scripts/cam_calibration/piper_calibrate_zed_extrinsics.py
+uv run --no-sync --active scripts_realbot/cam_calibration/piper_calibrate_zed_extrinsics.py
 ```
 
 交互流程（默认 12 组）：
@@ -66,7 +66,7 @@ uv run --no-sync --active scripts/cam_calibration/piper_calibrate_zed_extrinsics
 标完后想再验证 / 后续随时检查，不用重跑标定：
 
 ```bash
-uv run --no-sync --active scripts/cam_calibration/piper_visualize_zed_extrinsics.py
+uv run --no-sync --active scripts_realbot/cam_calibration/piper_visualize_zed_extrinsics.py
 ```
 
 可视化内容（http://localhost:8201）：
@@ -100,7 +100,7 @@ uv run --no-sync --active scripts/cam_calibration/piper_visualize_zed_extrinsics
 | 残差 > 50 mm | 板子松动 / 12 组都几乎同姿态 | 重贴板子；每次刻意倾斜不同轴 |
 | 残差 < 20 mm 但 frustum 位置明显偏 | base / cam 约定方向理解错 | 跟 `piper_real.py` 里 `_load_extrinsics` 对一下约定（`rpy_radians` 是 extrinsic `"xyz"`） |
 | `board not detected` | 棋盘被遮挡/过曝/不完整 | 调光、把板子整个塞进画面 |
-| viser 里 URDF 不动 | CAN 没连上 / 手臂没上电 | `scripts/setup_can.sh`；检查 `can1` `ip link` |
+| viser 里 URDF 不动 | CAN 没连上 / 手臂没上电 | `scripts_realbot/setup_can.sh`；检查 `can1` `ip link` |
 
 ## 5. 约定备忘
 

@@ -30,7 +30,7 @@ inverted) and writes the resulting camera pose to
 
 Example
 -------
-    uv run --no-sync --active scripts/cam_calibration/piper_calibrate_zed_extrinsics.py
+    uv run --no-sync --active scripts_realbot/cam_calibration/piper_calibrate_zed_extrinsics.py
 
 Defaults match `generate_calibration_board.py`: a 5×6-square checkerboard
 with 20 mm squares (→ 4×5 inner corners, board = 100×120 mm). Override with

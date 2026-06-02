@@ -13,11 +13,11 @@ IMPORTANT (per Agilex SDK note):
 
 Usage:
     # Default: set arm on PIPER_CAN_CHANNEL (can1) to slave mode
-    uv run --no-sync --active scripts/piper_set_mode.py
+    uv run --no-sync --active scripts_realbot/piper_set_mode.py
 
     # Explicit
-    uv run --no-sync --active scripts/piper_set_mode.py --channel can1 --mode slave
-    uv run --no-sync --active scripts/piper_set_mode.py --channel can0 --mode master
+    uv run --no-sync --active scripts_realbot/piper_set_mode.py --channel can1 --mode slave
+    uv run --no-sync --active scripts_realbot/piper_set_mode.py --channel can0 --mode master
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def main():
     if args.mode == "slave":
         print("If this arm was previously in MASTER mode, power-cycle it now.")
         print("After reboot, verify it responds to commands:")
-        print("   uv run --no-sync --active scripts/piper_identify_arms.py")
+        print("   uv run --no-sync --active scripts_realbot/piper_identify_arms.py")
         print("and confirm the arm accepts JointCtrl by running a cap-x eval.")
     else:
         print("Arm switched to master. No power-cycle needed for slave→master.")

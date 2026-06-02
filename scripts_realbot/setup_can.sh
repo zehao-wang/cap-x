@@ -8,9 +8,9 @@
 # Run once after every boot / USB replug.
 #
 # Usage:
-#   bash scripts/setup_can.sh                   # all adapters, 1 Mbps
-#   bash scripts/setup_can.sh 1000000           # explicit bitrate
-#   bash scripts/setup_can.sh 1000000 can0      # only bring up can0
+#   bash scripts_realbot/setup_can.sh                   # all adapters, 1 Mbps
+#   bash scripts_realbot/setup_can.sh 1000000           # explicit bitrate
+#   bash scripts_realbot/setup_can.sh 1000000 can0      # only bring up can0
 
 set -e
 
@@ -71,5 +71,5 @@ echo
 echo "Up interfaces:"
 ip -brief link show | awk '/can[0-9]+/'
 echo
-echo "Next: 'uv run --no-sync --active scripts/piper_identify_arms.py'"
+echo "Next: 'uv run --no-sync --active scripts_realbot/piper_identify_arms.py'"
 echo "to confirm which canN corresponds to the arm you want to use."

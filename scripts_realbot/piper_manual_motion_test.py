@@ -25,7 +25,7 @@ Every `goto` / `above` / `joints` / `home` command:
 
 Example
 -------
-    uv run --no-sync --active scripts/piper_manual_motion_test.py
+    uv run --no-sync --active scripts_realbot/piper_manual_motion_test.py
     # then inside:
     > where
     > above 0.35 0.00 0.10           # go 15 cm above (0.35, 0, 0.10)
