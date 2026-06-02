@@ -49,6 +49,15 @@ Gemini（**绝不用 qwen3.6**）。
       drop-in（`start/read_frames->(rgb,depth)/intrinsics_matrix/stop` + 曝光增益 best-effort）。
 - [x] **接线（非破坏）**：base.py + piper_real.py + setup.py 加 `piper_zed_source`(service|bridge,默认 bridge)
       + `piper_zed_service_socket`(默认 `/tmp/piper/zed.sock`)；`_Zed2iBridge` 保持原样供标定脚本用。
+- [x] **收口为 service-only（commit `4c7a62f`）**：normal flow 的场景 ZED 只走服务，cap-x 不再能从 yaml 控相机参数。
+  - `piper_real.yaml`：删 `piper_zed_fps/width/height/depth_mode/auto_exposure_gain/exposure/gain`，
+    设 `piper_zed_source: service` + `piper_zed_service_socket: /tmp/piper/zed.sock`，头注释改指 zed_service README。
+  - 端到端拆掉 yaml→bridge 调参链路：base.py 删 7 个 `piper_zed_*` 调参字段+forward（留 source/socket）；
+    piper_real.py 删 7 个 `zed_*` `__init__` 形参+forward；setup.py `_start_cameras` 去调参形参、bridge 分支
+    只吃 `PIPER_ZED_*` env/类常量、`_apply_zed_color_controls()` 改无参；`launch_piper_state_service.py`
+    停 forward 调参、改 forward `zed_source/zed_service_socket`（state service 也跟 yaml 走 service）。
+  - `_Zed2iBridge` 类与 bridge 分支保留，仅标定脚本直接构造用（读 `PIPER_ZED_*` env）。验证：无残留引用、
+    4 文件 parse、yaml 解析出 service/socket 且无调参 key、CodeExecEnvConfig 字段确认。无测试引用这些参数。
 - [x] **验证**：`tests/test_zed_service_client.py`（fake UDS server round-trip）通过；import/默认值/契约字段已查。
 - [x] **服务侧实现** `scripts_realbot/zed_service/`：`zed_depth_service.py`（独占 ZED 2i、DEPTH_MODE.NONE
       取左右目、`raiden.depth.tri_stereo` 算度量深度、UDS 线格式 v1、就绪自检后才 bind socket、
@@ -56,5 +65,5 @@ Gemini（**绝不用 qwen3.6**）。
   - 验证（无相机）：① loopback —— 真 server 线路 vs 真 cap-x `_ZedServiceClient`，rgb/depth(NaN)/
     内参/ping/干净退出全过；② 真 TRI-Stereo backend 在 raiden venv 实际加载(ONNX c32 CUDA)+ predict
     出 `(H,W)` float32 米深度。py_compile（两 venv）+ `bash -n` 通过。
-- [ ] **实机联调**（live-gated，缺真机/显示器）：真起服务开相机跑一次 → 把 `piper_zed_source` 切
-      `service`、`piper_zed_service_socket` 指同一路径，端到端跑通 Piper 观测流。
+- [ ] **实机联调**（live-gated，缺真机/显示器）：yaml 已是 `piper_zed_source: service`，真起服务开相机
+      跑一次（服务 socket 与 `piper_zed_service_socket` 同路径），端到端跑通 Piper 观测流。
