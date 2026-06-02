@@ -15,11 +15,18 @@ benchmark 自动验证 → 人批准」闭环，固化成**可验证、需人批
 
 ## 2. 获知当前进度 → 选定本次任务
 
-1. 读 **`GOAL.md`** —— 完整期待 + Pipeline 状态（哪些 ✅ / 哪些 🔲 / backlog）。从中挑出本次要推进的模块。
+1. 读 **`GOAL.md`** —— 完整期待 + Pipeline 状态（哪些 ✅ / 哪些 🟡 / 哪些 🔲 / backlog）。挑出本次要推进的：
+   优先 🔲（还没动的模块）；没有 🔲 时推进 **🟡 模块剩余的 live-gated 接线**（核心逻辑+单测已 done，
+   只差接到真实 sim / web / gh 上跑通的那截）。
 2. 读该模块对应的 **`docs-se/0X-*.md`**（先过一遍 `concepts.md` + `storage.md` 的术语与数据契约）。
 3. 把这次的计划拆成可执行步骤写进 **`Short-Term-GOAL.md`**（临时 memory），分模块 coding。
-4. 收尾：
-   - `Short-Term-GOAL.md` 完成项随手标记；整个模块做完 → 清空它，并在 `GOAL.md` 对应行标 ✅。
+4. 收尾 / 完成判据：
+   - **🔲 模块**：核心逻辑写完 + 单测通过即可标 ✅。
+   - **🟡 的 live-gated 接线**：没法纯单测，必须在真实环境里跑通一次才算完成 —— 例如
+     ③ 真跑通一次「人确认成功」的 web trial 并落出成对 `.json`+`.digest.md`；⑤ 在有 `gh` 的环境真开出一个含
+     promote/abandon 改动的 PR；⑥ cron 在设定时刻真触发一次 Evaluator。环境暂不具备时，在 `GOAL.md`
+     备注里写清"卡在哪个外部依赖"，保持 🟡 而非误标 ✅。
+   - `Short-Term-GOAL.md` 完成项随手标记；整块做完 → 清空它，并在 `GOAL.md` 对应行标 ✅。
 
 ## 3. 待实现系统（cap-x-se）的设计硬约束
 
@@ -40,6 +47,10 @@ benchmark 自动验证 → 人批准」闭环，固化成**可验证、需人批
 
 1. **自动修改**（直接动手，不用每步确认）。
 2. **逐轮 debug 和验证**。
-3. 改完、验证暂无明显 bug 之后再 commit；commit message **开头带 `[tmp]`**，便于区分我后续的改进与你维护的 commit。
+3. **每个验证通过的功能实现都 commit**：一旦某块功能改完、验证暂无明显 bug，就立刻 commit 落锚 ——
+   这样中断（context 压缩 / session 切换）后也不会丢失追踪，能从最近一个 commit 干净续上。
+   commit message **开头带 `[tmp]`**，便于区分我后续的改进与你维护的 commit；
    commit **不**加 Co-Authored-By、不把 Claude 列为 contributor。
-4. 快超 usage limit 时（当前 session 约 80%），提前归纳：这次改了什么、还想改什么，写进 `Short-Term-GOAL.md`。
+4. **随手保持 `Short-Term-GOAL.md` 可接续**：每推进一步就把「这次改了什么 / 还想改什么」更新进去。
+   我们拿不到 usage limit，靠 harness 在中断（context 压缩 / session 切换）后接着干 —— 只要
+   `Short-Term-GOAL.md` 始终是最新的可执行进度，中断在哪都能无缝续上。

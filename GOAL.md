@@ -47,15 +47,17 @@
 | --- | --- | --- | --- |
 | ① Live Loop（human-in-the-loop 主循环） | `01-interactive-loop.md` | ✅ | `capx/web/async_trial_runner.py`（已模块化出 `trial_support`/`vdm_feedback`/`trial_artifacts`/`reset_wizard`/`session_manager`）+ `capx/envs/base.py` |
 | ② Visualization（viser 回放） | `02-visualization.md` | ✅ | `capx/utils/viser_history.py`、`viser_history_io.py`、`viser_playback_panel.py` |
-| ③ Feedback Postprocessor + Experience Distill | `03-feedback-postprocessor.md` | 🔲 | 写 `mem/history_pool/<id>.json` + `<id>.digest.md` |
-| ④ Update Planner | `04-update-planner.md` | 🔲 | 读 `history_pool` → 写 `mem/func_candidate_pool/` |
-| ⑤ Benchmark Evaluator | `05-benchmark-evaluator.md` | 🔲 | candidate →（批准后）→ 长期 library |
-| ⑥ Heartbeat / Cron | `06-heartbeat-cron.md` | 🔲 | 调度 daily task + 夜间触发 Evaluator |
-| ⓪ 共享存储脚手架（`mem/` schema + config） | `storage.md` / `config.md` | 🔲 | ③④⑤ 的公共前置，建议先做 |
+| ③ Feedback Postprocessor + Experience Distill | `03-feedback-postprocessor.md` | 🟡 | 核心已实现+单测：`capx/self_evolve/feedback_postprocessor.py`；**剩 live-loop 接线**（async_trial_runner `human_finished` 分支 + 环境交互式 generalize）为 sim-gated，暂挂等真人在 web/sim 联调 |
+| ④ Update Planner | `04-update-planner.md` | ✅ | `capx/self_evolve/{history_reader,proposal,update_planner}.py` + `tests/test_update_planner.py`（注入 query_fn，scripted 全程单测） |
+| ⑤ Benchmark Evaluator | `05-benchmark-evaluator.md` | 🟡 | 核心已实现+单测：`capx/self_evolve/{benchmark_eval,library_pr}.py` + `tests/test_benchmark_evaluator.py`（注入 `eval_fn`，stats 累加/引用扫描/promote-abandon-keep/报告/PR-plan 全程单测）；**剩**真正的 sim `eval_fn`（注入 candidate 跑 benchmark + VDM）+ `create_library_pr` 的 gh/push 链路为 live-gated（本机无 gh），等 ⑥ cron 接线时联调 |
+| ⑥ Heartbeat / Cron | `06-heartbeat-cron.md` | 🟡 | 核心已实现+单测：`capx/self_evolve/scheduler.py`（`CronSpec` 5字段匹配 / `select_daily_tasks` 低正确率选择 / `Heartbeat.tick` 分钟级去重 / `make_evaluator_job` 夜间触发⑤(空池no-op) / `make_daily_task_job` 派发交互循环）+ `tests/test_scheduler.py`；config 加 `heartbeat.*` 组。**剩** `run_forever` 长驻 + 真正 accuracy_provider / interactive_loop / sim eval_fn 接线为 live-gated |
+| ⓪ 共享存储脚手架（`mem/` schema + config） | `storage.md` / `config.md` | ✅ | `capx/self_evolve/`（`config.py` / `schemas.py` / `storage.py`）+ `tests/test_self_evolve_storage.py` |
 
-> ⚠️ 现状提醒：`mem/` 下还没有 `history_pool/` `func_candidate_pool/`；`capx/skill_library/`
-> `capx/atomic_task_library/` 两个模块尚不存在。代码里已有的 `feedback_distill` phase 是 live loop
-> 内折叠 operator guidance 的，**不是** module ③ 的 Experience Distill —— 两者别混淆。
+> ⚠️ 现状提醒：⓪ 已落地——`mem/` 的读写契约在 `capx/self_evolve/`（`MemStore` 按需 lazily 建
+> `history_pool/` `func_candidate_pool/` + `.processed_history`），但 pool 目录本身要等 ③ 真正写入才出现；
+> 长期库 `capx/skill_library/` `capx/atomic_task_library/` 两个模块仍不存在（等 ⑤ 批准后才建）。
+> 代码里已有的 `feedback_distill` phase 是 live loop 内折叠 operator guidance 的，**不是** module ③
+> 的 Experience Distill —— 两者别混淆。
 
 ---
 
