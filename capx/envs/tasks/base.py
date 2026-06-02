@@ -75,6 +75,11 @@ class CodeExecEnvConfig:
     piper_zed_auto_exposure_gain: bool | None = None
     piper_zed_exposure: int | None = None
     piper_zed_gain: int | None = None
+    # Scene ZED source: "bridge" (local pyzed subprocess, default) or "service"
+    # (read RGB+depth from the standalone ZED service over a Unix socket; cap-x
+    # does no depth compute). See piper/ZED_SERVICE_REQUIREMENTS.md.
+    piper_zed_source: str | None = None
+    piper_zed_service_socket: str | None = None
     # When set, the Piper low-level env runs in service-client mode and
     # connects to launch_piper_state_service over websockets instead of
     # opening CAN/cameras locally.
@@ -142,6 +147,8 @@ class CodeExecutionEnvBase(Env):
             "zed_auto_exposure_gain": cfg.piper_zed_auto_exposure_gain,
             "zed_exposure": cfg.piper_zed_exposure,
             "zed_gain": cfg.piper_zed_gain,
+            "zed_source": cfg.piper_zed_source,
+            "zed_service_socket": cfg.piper_zed_service_socket,
         }
         if cfg.piper_state_service_url is not None:
             low_level_kwargs["service_url"] = str(cfg.piper_state_service_url)

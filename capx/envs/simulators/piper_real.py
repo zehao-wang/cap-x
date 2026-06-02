@@ -78,6 +78,10 @@ class PiperRealLowLevel(
     )
     ZED_OPEN_TIMEOUT_SEC = float(os.environ.get("PIPER_ZED_OPEN_TIMEOUT_SEC", "15"))
     ZED_OPEN_DEADLINE_SEC = float(os.environ.get("PIPER_ZED_OPEN_DEADLINE_SEC", "180"))
+    # Scene ZED source: "bridge" (local pyzed subprocess, default) or "service"
+    # (read RGB+depth from the standalone ZED service; cap-x does no depth compute).
+    ZED_SOURCE = os.environ.get("PIPER_ZED_SOURCE", "bridge")
+    ZED_SERVICE_SOCKET = os.environ.get("PIPER_ZED_SERVICE_SOCKET", "/tmp/piper/zed.sock")
 
     WRIST_CAMERA_ENABLED = _env_bool("PIPER_WRIST_CAMERA_ENABLED", False)
     WRIST_CAMERA_SERIAL = os.environ.get("PIPER_WRIST_CAMERA_SERIAL") or None
@@ -118,6 +122,8 @@ class PiperRealLowLevel(
         zed_auto_exposure_gain: bool | None = None,
         zed_exposure: int | None = None,
         zed_gain: int | None = None,
+        zed_source: str | None = None,
+        zed_service_socket: str | None = None,
     ) -> None:
         super().__init__()
         self._init_runtime_state(
@@ -141,6 +147,8 @@ class PiperRealLowLevel(
             zed_auto_exposure_gain=zed_auto_exposure_gain,
             zed_exposure=zed_exposure,
             zed_gain=zed_gain,
+            zed_source=zed_source,
+            zed_service_socket=zed_service_socket,
         )
         self._init_recording_state()
         self._init_viser(viser_debug)

@@ -140,3 +140,39 @@
   满足后再升入上面的主线 §3。本文件不重复其内容，避免两处维护。
 - **来自设计的未来项**（`docs-se/concepts.md`）：Memory Compact（§6，目前不做）、rgbd video feedback
   （§7，human feedback 当前仅 text；未来支持 rgbd demo 视频 → 专门 skill 处理）。
+
+---
+
+## 5. Real-robot 实验设置 / Real Robot Setup
+
+> 真机实验是 self-evolve 主线（§2–§4）之外的**独立链路**：在 AgileX Piper 真机上跑 agent0 交互闭环。
+> 本节只记**实验设置 + 硬约束**；连接/调试的逐轮进展放 `Short-Term-GOAL.md`。
+
+### 硬件
+
+- **机械臂**：AgileX Piper 6-DOF，CAN 总线驱动（`piper_sdk`）。
+- **场景相机**：**ZED 2i** → `obs["robot0_robotview"]`（RGB + depth + 内参 + 外参）。
+  外参（base 系位姿）由 cap-x 标定文件 `env_configs/real/piper_zed_extrinsics.yaml` 提供，不来自服务。
+- **腕部相机（可选）**：RealSense D435* → `obs["robot0_eye_in_hand"]`（cap-x 本地直连）。
+- 落地配置：`env_configs/real/piper_real.yaml`（本地）/ `piper_real_service.yaml`（机械臂状态走服务）。
+
+### ZED 相机 = 独立服务（设计决定，用户拍板）
+
+- ZED 相机**单独启动一个服务**，对外返回 **RGB + depth + 内参 + timestamp**（**外参不归服务**）。
+- 该服务**独占相机**，并在**服务侧**完成所有深度计算（如基于 ZED 左右目的 TRI-Stereo 学习深度）。
+- **cap-x 只负责读**：经固定协议（UDS）取 RGB+depth 写进 obs，**不在 cap-x 做任何多余处理**
+  （不跑 tri-stereo / 不算 SDK 深度 / 不加深度模型依赖）。服务实现契约见
+  `capx/envs/simulators/piper/ZED_SERVICE_REQUIREMENTS.md`。
+- **就绪 + 访问约定**：服务启动时自己跑一次读取自检，**通过才算开启成功**（⇒ socket 可连即保证有合法数据）；
+  cap-x 侧**不设放弃超时**——服务不可达时**心跳等待直到恢复**，并在屏幕告警（请检查相机服务状态 + 当前失败原因）。
+- 理由：① 相机单 owner（ZED 只能被一个进程 open）；② 依赖隔离——pyzed（numpy<2）、深度模型的
+  onnxruntime/权重全留在服务侧，cap-x 主环境保持干净；③ 与已有 `piper_state_service`（机械臂状态走
+  websocket 服务、cap-x 当客户端）一致的「硬件跑服务、cap-x 当瘦客户端」模式。
+
+### 状态
+
+- 🔲 **ZED 相机服务**（外部实现）：按 `ZED_SERVICE_REQUIREMENTS.md` 实现并常驻启动。
+- ✅ **cap-x 侧瘦客户端 + 接线**：只读、UDS、心跳等待；经 config `piper_zed_source: service|bridge`
+  选择，**默认 `bridge`**（不破坏现有本地流 + 标定脚本），服务就绪后切 `service`。（实现/测试细节见 `Short-Term-GOAL.md`）
+- 🔲 **Piper 实机交互闭环跑通**：本地实机 + OpenRouter Gemini（**不用 qwen3.6**）。
+- ✅ **已撤销**「在 cap-x 内跑 TRI-Stereo」的旧做法，深度全部移到服务侧（cap-x 不持有任何深度模型/依赖）。

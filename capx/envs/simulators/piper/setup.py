@@ -125,27 +125,46 @@ class PiperSetupMixin:
         zed_auto_exposure_gain: bool | None = None,
         zed_exposure: int | None = None,
         zed_gain: int | None = None,
+        zed_source: str | None = None,
+        zed_service_socket: str | None = None,
     ) -> None:
-        self._zed = _Zed2iBridge(
-            bridge_script=self.ZED_BRIDGE_SCRIPT,
-            bridge_python=self.ZED_BRIDGE_PYTHON,
-            fps=int(zed_fps) if zed_fps is not None else self.ZED_FPS,
-            width=int(zed_width) if zed_width is not None else self.ZED_WIDTH,
-            height=int(zed_height) if zed_height is not None else self.ZED_HEIGHT,
-            use_depth=True,
-            depth_mode=str(zed_depth_mode) if zed_depth_mode is not None else self.ZED_DEPTH_MODE,
-            open_timeout_sec=self.ZED_OPEN_TIMEOUT_SEC,
-            open_deadline_sec=self.ZED_OPEN_DEADLINE_SEC,
-        )
-        print("[piper_real] Starting ZED2i bridge...")
+        source = (zed_source or self.ZED_SOURCE).lower()
+        if source == "service":
+            # Read RGB+depth from the standalone ZED service (cap-x does no depth
+            # compute). Drop-in for the local bridge on the observation path.
+            from capx.envs.simulators.piper.zed_service_client import _ZedServiceClient
+
+            # No give-up: the client heartbeat-waits until the service is reachable
+            # (warning on screen with the fail reason each beat).
+            self._zed = _ZedServiceClient(
+                socket_path=zed_service_socket or self.ZED_SERVICE_SOCKET,
+                connect_timeout_sec=self.ZED_OPEN_TIMEOUT_SEC,
+            )
+            print(f"[piper_real] Connecting to ZED service at {self._zed.socket_path}...")
+        else:
+            self._zed = _Zed2iBridge(
+                bridge_script=self.ZED_BRIDGE_SCRIPT,
+                bridge_python=self.ZED_BRIDGE_PYTHON,
+                fps=int(zed_fps) if zed_fps is not None else self.ZED_FPS,
+                width=int(zed_width) if zed_width is not None else self.ZED_WIDTH,
+                height=int(zed_height) if zed_height is not None else self.ZED_HEIGHT,
+                use_depth=True,
+                depth_mode=str(zed_depth_mode) if zed_depth_mode is not None else self.ZED_DEPTH_MODE,
+                open_timeout_sec=self.ZED_OPEN_TIMEOUT_SEC,
+                open_deadline_sec=self.ZED_OPEN_DEADLINE_SEC,
+            )
+            print("[piper_real] Starting ZED2i bridge...")
         self._zed.start()
         self._intrinsics = self._zed.intrinsics_matrix()
-        print(f"[piper_real] ZED2i ready at {self._zed.width}x{self._zed.height}")
-        self._apply_zed_color_controls(
-            zed_auto_exposure_gain=zed_auto_exposure_gain,
-            zed_exposure=zed_exposure,
-            zed_gain=zed_gain,
-        )
+        print(f"[piper_real] ZED ready at {self._zed.width}x{self._zed.height}")
+        if source != "service":
+            # Exposure/gain are a camera bring-up concern owned by the service in
+            # service mode; cap-x only reads there.
+            self._apply_zed_color_controls(
+                zed_auto_exposure_gain=zed_auto_exposure_gain,
+                zed_exposure=zed_exposure,
+                zed_gain=zed_gain,
+            )
 
         if not self._wrist_camera_enabled:
             return
