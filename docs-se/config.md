@@ -11,4 +11,8 @@
 | `benchmark_eval.min_samples` | 5 | 建议固化前所需的最小 `eval_runs` | [05](05-benchmark-evaluator.md) |
 | `benchmark_eval.promote_threshold` | 10 | `positive` 达到即建议固化（在 ~10 个 task 最终成功代码里都出现） | [05](05-benchmark-evaluator.md) |
 | `benchmark_eval.max_idle_evals` | 50 | candidate 经历这么多次 eval 仍 `used_runs==0` 且无人引用 → 建议遗弃（设大些，因为一整个 task set 可能都用不到某 candidate） | [05](05-benchmark-evaluator.md) |
-| `benchmark_eval.schedule` | 夜间 cron | 固定一次；也可人工唤醒 | [05](05-benchmark-evaluator.md) / [06](06-heartbeat-cron.md) |
+| `benchmark_eval.schedule` | 夜间 cron | 固定一次；也可人工唤醒（意图记录；具体 cron 表达式见 `heartbeat.evaluator_cron`） | [05](05-benchmark-evaluator.md) / [06](06-heartbeat-cron.md) |
+| `heartbeat.evaluator_cron` | `0 2 * * *` | 夜间触发 Benchmark Evaluator 的 cron 表达式（默认每天 02:00） | [06](06-heartbeat-cron.md) |
+| `heartbeat.daily_task_cron` | `0 9 * * *` | 唤起 daily task（把低正确率 task 交给人）的 cron 表达式（默认每天 09:00） | [06](06-heartbeat-cron.md) |
+| `heartbeat.daily_task_count` | 3 | 每次 daily heartbeat 交给交互循环的低正确率 task 数 | [06](06-heartbeat-cron.md) |
+| `heartbeat.low_accuracy_threshold` | 0.5 | task success rate ≤ 此值才算「低正确率」、纳入 daily heartbeat | [06](06-heartbeat-cron.md) |
