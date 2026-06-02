@@ -173,7 +173,10 @@
 
 ### 状态
 
-- 🔲 **ZED 相机服务**（外部实现）：按 `ZED_SERVICE_REQUIREMENTS.md` 实现并常驻启动。
+- 🟡 **ZED 相机服务**：按 `ZED_SERVICE_REQUIREMENTS.md` 实现于 `scripts_realbot/zed_service/`
+  （`zed_depth_service.py` + `run_zed_service.sh`，用 raiden venv 跑 pyzed + TRI-Stereo）。线格式 v1 +
+  就绪自检 + 干净退出已写好；loopback（真 client）+ 真 TRI-Stereo backend 加载均已验证。**卡在缺真机/显示器**
+  —— 还差真开相机常驻跑一次。
 - ✅ **cap-x 侧瘦客户端 + 接线**：只读、UDS、心跳等待；经 config `piper_zed_source: service|bridge`
   选择，**默认 `bridge`**（不破坏现有本地流 + 标定脚本），服务就绪后切 `service`。（实现/测试细节见 `Short-Term-GOAL.md`）
 - 🔲 **Piper 实机交互闭环跑通**：本地实机 + OpenRouter Gemini（**不用 qwen3.6**）。

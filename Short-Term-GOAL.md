@@ -50,4 +50,11 @@ Gemini（**绝不用 qwen3.6**）。
 - [x] **接线（非破坏）**：base.py + piper_real.py + setup.py 加 `piper_zed_source`(service|bridge,默认 bridge)
       + `piper_zed_service_socket`(默认 `/tmp/piper/zed.sock`)；`_Zed2iBridge` 保持原样供标定脚本用。
 - [x] **验证**：`tests/test_zed_service_client.py`（fake UDS server round-trip）通过；import/默认值/契约字段已查。
-- [ ] 等 raiden 按契约实现并起服务 → 把 `piper_zed_source` 切 `service` 做实机联调。
+- [x] **服务侧实现** `scripts_realbot/zed_service/`：`zed_depth_service.py`（独占 ZED 2i、DEPTH_MODE.NONE
+      取左右目、`raiden.depth.tri_stereo` 算度量深度、UDS 线格式 v1、就绪自检后才 bind socket、
+      SIGTERM/SIGINT 干净退出删 socket）+ `run_zed_service.sh`（用 raiden venv 起）+ `README.md`。
+  - 验证（无相机）：① loopback —— 真 server 线路 vs 真 cap-x `_ZedServiceClient`，rgb/depth(NaN)/
+    内参/ping/干净退出全过；② 真 TRI-Stereo backend 在 raiden venv 实际加载(ONNX c32 CUDA)+ predict
+    出 `(H,W)` float32 米深度。py_compile（两 venv）+ `bash -n` 通过。
+- [ ] **实机联调**（live-gated，缺真机/显示器）：真起服务开相机跑一次 → 把 `piper_zed_source` 切
+      `service`、`piper_zed_service_socket` 指同一路径，端到端跑通 Piper 观测流。
