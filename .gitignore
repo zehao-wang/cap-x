@@ -34,7 +34,7 @@ output_debug/
 outputs**
 curobo_debug/
 =*
-core.*
+# core.*
 wandb/
 .webui_secret_key
 
