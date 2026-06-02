@@ -3,18 +3,15 @@
 # Prereqs (one-time on this machine):
 #   1. uv sync --extra contactgraspnet --extra piper       # base + GraspNet + CAN/arm SDK
 #   2. Bring up CAN on Linux (Agilex docs + setup_can.sh): sudo /path/to/setup_can.sh
-#   3. A separate conda env `zed_bridge` (python 3.10 + pyzed + numpy<2) created per
-#      robodata_Agilex README; exports ZED_BRIDGE_PYTHON so the subprocess bridge can find it:
+#   3. Start the standalone ZED service (owns the ZED 2i + TRI-Stereo depth) and
+#      point cap-x at its Unix socket. cap-x reads RGB+depth from it and does no
+#      depth compute of its own. See scripts_realbot/zed_service/README.md.
+#      The legacy local pyzed bridge is no longer used in the normal flow — it
+#      survives only for the calibration scripts (which open _Zed2iBridge
+#      directly and read PIPER_ZED_* env vars).
 #
-#      export ZED_BRIDGE_PYTHON=$(conda run -n zed_bridge which python)
-#      export PIPER_ZED_BRIDGE=$HOME/Documents/Projects/robodata_Agilex/camera/zed_bridge.py
 #      export PIPER_URDF_PATH=$HOME/Documents/Projects/robodata_Agilex/assets/piper_description/urdf/piper_description.urdf
 #      export PIPER_CAMERA_EXTRINSICS=$HOME/Documents/Projects/cap-x/env_configs/real/piper_zed_extrinsics.yaml
-#
-# Optional ZED tuning (defaults are already sensible — NEURAL depth, 180s open budget):
-#   export PIPER_ZED_DEPTH_MODE=NEURAL          # PERFORMANCE / QUALITY / ULTRA / NEURAL / NEURAL_PLUS
-#   export PIPER_ZED_OPEN_TIMEOUT_SEC=15        # per-attempt sl.Camera.open() timeout
-#   export PIPER_ZED_OPEN_DEADLINE_SEC=180      # total retry budget before giving up
 #
 # Optional wrist RealSense D435/D435i/D435if:
 #   export PIPER_WRIST_CAMERA_SERIAL=0123456789 # only needed when multiple RealSense devices exist
@@ -37,17 +34,13 @@ env:
     # - if input target z < piper_min_target_z, goto_pose clamps it to piper_min_target_z
     piper_planner_timesteps: 20
     piper_min_target_z: 0.02
-    # ZED 2i scene camera (overrides PIPER_ZED_* env vars when set).
-    # depth_mode: PERFORMANCE / QUALITY / ULTRA / NEURAL / NEURAL_PLUS
-    piper_zed_fps: 30
-    piper_zed_width: 1920
-    piper_zed_height: 1080
-    piper_zed_depth_mode: NEURAL
-    # Optional ZED color controls. Exposure/gain are SDK percent values [0, 100].
-    # Leave unset to keep the camera/bridge defaults.
-    piper_zed_auto_exposure_gain: false
-    piper_zed_exposure: 60
-    piper_zed_gain: 50
+    # Scene ZED 2i comes only from the standalone ZED service over a Unix socket;
+    # cap-x reads RGB+depth and does no depth compute. Camera params (resolution,
+    # fps, depth mode, exposure/gain) are owned by the service, not configurable
+    # here. The local pyzed bridge ("bridge") survives only for the calibration
+    # scripts. See scripts_realbot/zed_service/README.md.
+    piper_zed_source: service
+    piper_zed_service_socket: /tmp/piper/zed.sock
     # Wrist-mounted RealSense D435* observation. Exposes:
     #   obs["robot0_eye_in_hand"]["images"]["rgb"]
     #   obs["robot0_eye_in_hand"]["images"]["depth"]

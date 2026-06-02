@@ -471,13 +471,8 @@ def _build_env_from_yaml(
         "wrist_camera_link_name": cfg.get("piper_wrist_camera_link_name"),
         "wrist_camera_position": cfg.get("piper_wrist_camera_position"),
         "wrist_camera_rpy_radians": cfg.get("piper_wrist_camera_rpy_radians"),
-        "zed_fps": cfg.get("piper_zed_fps"),
-        "zed_width": cfg.get("piper_zed_width"),
-        "zed_height": cfg.get("piper_zed_height"),
-        "zed_depth_mode": cfg.get("piper_zed_depth_mode"),
-        "zed_auto_exposure_gain": cfg.get("piper_zed_auto_exposure_gain"),
-        "zed_exposure": cfg.get("piper_zed_exposure"),
-        "zed_gain": cfg.get("piper_zed_gain"),
+        "zed_source": cfg.get("piper_zed_source"),
+        "zed_service_socket": cfg.get("piper_zed_service_socket"),
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     env = PiperRealLowLevel(**kwargs)

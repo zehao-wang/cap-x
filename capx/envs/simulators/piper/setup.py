@@ -118,13 +118,6 @@ class PiperSetupMixin:
         wrist_camera_height: int | None,
         wrist_camera_use_depth: bool | None,
         *,
-        zed_fps: int | None = None,
-        zed_width: int | None = None,
-        zed_height: int | None = None,
-        zed_depth_mode: str | None = None,
-        zed_auto_exposure_gain: bool | None = None,
-        zed_exposure: int | None = None,
-        zed_gain: int | None = None,
         zed_source: str | None = None,
         zed_service_socket: str | None = None,
     ) -> None:
@@ -142,14 +135,16 @@ class PiperSetupMixin:
             )
             print(f"[piper_real] Connecting to ZED service at {self._zed.socket_path}...")
         else:
+            # Debug/calibration-style local bridge. Camera params come from the
+            # PIPER_ZED_* env vars (class constants), not from the task yaml.
             self._zed = _Zed2iBridge(
                 bridge_script=self.ZED_BRIDGE_SCRIPT,
                 bridge_python=self.ZED_BRIDGE_PYTHON,
-                fps=int(zed_fps) if zed_fps is not None else self.ZED_FPS,
-                width=int(zed_width) if zed_width is not None else self.ZED_WIDTH,
-                height=int(zed_height) if zed_height is not None else self.ZED_HEIGHT,
+                fps=self.ZED_FPS,
+                width=self.ZED_WIDTH,
+                height=self.ZED_HEIGHT,
                 use_depth=True,
-                depth_mode=str(zed_depth_mode) if zed_depth_mode is not None else self.ZED_DEPTH_MODE,
+                depth_mode=self.ZED_DEPTH_MODE,
                 open_timeout_sec=self.ZED_OPEN_TIMEOUT_SEC,
                 open_deadline_sec=self.ZED_OPEN_DEADLINE_SEC,
             )
@@ -159,12 +154,9 @@ class PiperSetupMixin:
         print(f"[piper_real] ZED ready at {self._zed.width}x{self._zed.height}")
         if source != "service":
             # Exposure/gain are a camera bring-up concern owned by the service in
-            # service mode; cap-x only reads there.
-            self._apply_zed_color_controls(
-                zed_auto_exposure_gain=zed_auto_exposure_gain,
-                zed_exposure=zed_exposure,
-                zed_gain=zed_gain,
-            )
+            # service mode; cap-x only reads there. For the debug bridge they come
+            # from the PIPER_ZED_* env vars.
+            self._apply_zed_color_controls()
 
         if not self._wrist_camera_enabled:
             return
@@ -210,20 +202,11 @@ class PiperSetupMixin:
                 f"({type(e).__name__}: {e})"
             )
 
-    def _apply_zed_color_controls(
-        self,
-        *,
-        zed_auto_exposure_gain: bool | None,
-        zed_exposure: int | None,
-        zed_gain: int | None,
-    ) -> None:
-        auto_exposure_gain = (
-            self.ZED_AUTO_EXPOSURE_GAIN
-            if zed_auto_exposure_gain is None
-            else bool(zed_auto_exposure_gain)
-        )
-        exposure = self.ZED_EXPOSURE if zed_exposure is None else int(zed_exposure)
-        gain = self.ZED_GAIN if zed_gain is None else int(zed_gain)
+    def _apply_zed_color_controls(self) -> None:
+        # Debug-bridge only; values come from PIPER_ZED_* env vars.
+        auto_exposure_gain = self.ZED_AUTO_EXPOSURE_GAIN
+        exposure = self.ZED_EXPOSURE
+        gain = self.ZED_GAIN
 
         if auto_exposure_gain is True:
             self._zed.set_auto_exposure_gain()

@@ -66,18 +66,14 @@ class CodeExecEnvConfig:
     piper_wrist_camera_link_name: str | None = None
     piper_wrist_camera_position: list[float] | None = None
     piper_wrist_camera_rpy_radians: list[float] | None = None
-    # ZED 2i scene camera knobs (override the env-var defaults baked into
-    # PiperRealLowLevel; see piper_real.yaml for examples).
-    piper_zed_fps: int | None = None
-    piper_zed_width: int | None = None
-    piper_zed_height: int | None = None
-    piper_zed_depth_mode: str | None = None
-    piper_zed_auto_exposure_gain: bool | None = None
-    piper_zed_exposure: int | None = None
-    piper_zed_gain: int | None = None
-    # Scene ZED source: "bridge" (local pyzed subprocess, default) or "service"
-    # (read RGB+depth from the standalone ZED service over a Unix socket; cap-x
-    # does no depth compute). See piper/ZED_SERVICE_REQUIREMENTS.md.
+    # Scene ZED source: "service" (read RGB+depth from the standalone ZED
+    # service over a Unix socket; cap-x does no depth compute) or "bridge"
+    # (local pyzed subprocess). The normal cap-x flow uses "service"; the
+    # local bridge survives only for the calibration scripts, which construct
+    # _Zed2iBridge directly. Camera params (fps/resolution/depth mode/exposure)
+    # are therefore NOT configurable from this yaml anymore — they belong to
+    # whoever owns the camera (the ZED service, or PIPER_ZED_* env vars for the
+    # debug bridge). See piper/ZED_SERVICE_REQUIREMENTS.md.
     piper_zed_source: str | None = None
     piper_zed_service_socket: str | None = None
     # When set, the Piper low-level env runs in service-client mode and
@@ -140,13 +136,6 @@ class CodeExecutionEnvBase(Env):
                 if cfg.piper_wrist_camera_rpy_radians is not None
                 else None
             ),
-            "zed_fps": cfg.piper_zed_fps,
-            "zed_width": cfg.piper_zed_width,
-            "zed_height": cfg.piper_zed_height,
-            "zed_depth_mode": cfg.piper_zed_depth_mode,
-            "zed_auto_exposure_gain": cfg.piper_zed_auto_exposure_gain,
-            "zed_exposure": cfg.piper_zed_exposure,
-            "zed_gain": cfg.piper_zed_gain,
             "zed_source": cfg.piper_zed_source,
             "zed_service_socket": cfg.piper_zed_service_socket,
         }
