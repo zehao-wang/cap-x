@@ -22,6 +22,12 @@
 #   6. Build the web-UI once (and after any web-ui edit):
 #        .venv/bin/python -c 'from capx.envs.launch import _ensure_frontend_built; _ensure_frontend_built()'
 #
+# On launch this prints a PRE-FLIGHT CHECKLIST and pauses: it starts OpenRouter +
+# SAM3 + GraspNet itself, but YOU must bring up the arm (power + CAN, and the
+# piper_state_service for *_service configs) and — when piper_zed_source=service —
+# the ZED camera service (scripts_realbot/zed_service/run_zed_service.sh).
+# Set CAPX_SKIP_CHECKLIST=1 to skip the pause.
+#
 # Run:
 #   bash scripts_realbot/run_agent0_piper_interactive.sh [config_yaml]
 # Then open http://localhost:8200 in your browser (Viser 3D is reverse-proxied
@@ -72,6 +78,96 @@ fi
 for v in PIPER_ZED_BRIDGE PIPER_URDF_PATH PIPER_CAMERA_EXTRINSICS; do
     [[ -f "${!v}" ]] || echo "WARN: $v points at a missing file: ${!v}" >&2
 done
+
+# ---------------------------------------------------------------------------
+# Pre-flight checklist — things YOU must bring up by hand before a trial.
+# This script starts OpenRouter + SAM3 + GraspNet itself, but it CANNOT start
+# the arm or the ZED camera service. We probe what we can and then pause so you
+# can confirm everything is live. Set CAPX_SKIP_CHECKLIST=1 to skip the pause.
+# ---------------------------------------------------------------------------
+read_cfg() {  # read_cfg <key>  -> first matching scalar anywhere in the config, else ""
+    "$PY" - "$CONFIG" "$1" <<'PY' 2>/dev/null || true
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+key = sys.argv[2]
+def find(d):
+    if isinstance(d, dict):
+        if key in d:
+            return d[key]
+        for v in d.values():
+            r = find(v)
+            if r is not None:
+                return r
+    return None
+v = find(cfg)
+print("" if v is None else v)
+PY
+}
+
+ZED_SOURCE="$(read_cfg piper_zed_source)"; ZED_SOURCE="${ZED_SOURCE:-bridge}"
+ZED_SOCK="$(read_cfg piper_zed_service_socket)"; ZED_SOCK="${ZED_SOCK:-/tmp/piper/zed.sock}"
+LOW_LEVEL="$(read_cfg low_level)"
+STATE_URL="$(read_cfg piper_state_service_url)"
+CAN_CH="${PIPER_CAN_CHANNEL:-${PIPER_CAN_INTERFACE:-can0}}"
+
+mark() { case "$1" in ok) echo "  [✓]";; no) echo "  [✗]";; *) echo "  [?]";; esac; }
+
+# 1) Robot arm: CAN link up (+ piper_state_service when this config talks to it).
+if ip link show "$CAN_CH" 2>/dev/null | grep -q "state UP\|<.*UP.*>"; then
+    CAN_STAT=ok; CAN_MSG="CAN '$CAN_CH' is UP"
+else
+    CAN_STAT=no; CAN_MSG="CAN '$CAN_CH' is DOWN — run: sudo scripts_realbot/setup_can.sh"
+fi
+ROBOT_LINE="$(mark "$CAN_STAT") Robot arm powered + E-stop released; $CAN_MSG"
+
+STATE_LINE=""
+if [[ "$LOW_LEVEL" == *service* || -n "$STATE_URL" ]]; then
+    hp="${STATE_URL#ws://}"; hp="${hp#wss://}"; host="${hp%%:*}"; port="${hp##*:}"; port="${port%%/*}"
+    if [[ -n "$host" && -n "$port" ]] && (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
+        exec 3>&- 3<&- 2>/dev/null || true
+        STATE_LINE="$(mark ok) piper_state_service reachable at $STATE_URL"
+    else
+        STATE_LINE="$(mark no) piper_state_service NOT reachable at ${STATE_URL:-<unset>} — start it (piper_real_service.yaml §1)"
+    fi
+fi
+
+# 2) ZED camera service (only in service mode; in bridge mode this script's
+#    subprocess opens the camera, so nothing to start by hand).
+if [[ "$ZED_SOURCE" == "service" ]]; then
+    if "$PY" - "$ZED_SOCK" <<'PY' 2>/dev/null; then
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(2.0)
+s.connect(sys.argv[1]); s.close()
+PY
+        ZED_LINE="$(mark ok) ZED camera service reachable at $ZED_SOCK"
+    else
+        ZED_LINE="$(mark no) ZED camera service NOT reachable at $ZED_SOCK — start it: scripts_realbot/zed_service/run_zed_service.sh --socket $ZED_SOCK"
+    fi
+else
+    ZED_LINE="$(mark '?') ZED in 'bridge' mode (piper_zed_source=$ZED_SOURCE) — this script opens the camera itself; no service to start"
+fi
+
+# 3) OpenRouter proxy — this script auto-starts it below; just needs the key.
+OR_LINE="$(mark ok) OpenRouter proxy auto-started by this script on :$OPENROUTER_PORT (.openrouterkey present)"
+
+cat <<EOF
+
+============================================================================
+  PRE-FLIGHT CHECKLIST  (config: $CONFIG)
+$ROBOT_LINE
+${STATE_LINE:+$STATE_LINE
+}$ZED_LINE
+$OR_LINE
+============================================================================
+EOF
+
+if [[ "${CAPX_SKIP_CHECKLIST:-0}" != "1" ]]; then
+    if [[ -t 0 ]]; then
+        read -r -p "Bring up anything marked [✗], then press Enter to continue (Ctrl-C to abort)... " _ || true
+    else
+        echo "(stdin not a TTY — not pausing; set CAPX_SKIP_CHECKLIST=1 to silence this note)"
+    fi
+fi
 
 # Real-robot configs are gated behind CAPX_ENABLE_REAL and only the "real"
 # family is exposed in the dropdown for this launch.
