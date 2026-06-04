@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import gc
 import logging
 import os
 import threading
@@ -22,7 +21,6 @@ from capx.utils.launch_utils import (
     _extract_code,
     _get_visual_feedback,
     _parse_multi_turn_decision,
-    _save_trial_artifacts,
 )
 from capx.harnesses.prompt import (
     get_vdm_task_description_from_env,
@@ -64,69 +62,17 @@ from capx.web.trial_support import (
 )
 from capx.web.model_stream import stream_query
 from capx.web.reset_wizard import GuidedResetWizard
-from capx.web.trial_artifacts import save_auxiliary_artifacts
+from capx.web.trial_helpers import (
+    annotate_code as _annotate_code,
+    append_task_to_prompt as _append_task_to_prompt,
+    next_trial_number as _next_trial_number,
+)
+from capx.web.trial_finalize import finalize_trial
 from capx.web import vdm_feedback
 
 logger = logging.getLogger(__name__)
 
 MULTITURN_LIMIT = 30
-
-
-def _append_task_to_prompt(full_prompt: list, task_text: str) -> None:
-    """Fold the operator's runtime task into the last prompt message in place.
-
-    Handles both content shapes the harness uses: a list of content parts whose
-    first part is the ``{"type": "text", "text": ...}`` block, or a plain string.
-    """
-    addition = f"\n\nThe task for this trial is:\n{task_text}"
-    if not full_prompt:
-        return
-    msg = full_prompt[-1]
-    content = msg.get("content")
-    if isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict) and "text" in part:
-                part["text"] = (part.get("text") or "") + addition
-                return
-        content.insert(0, {"type": "text", "text": addition.strip()})
-    elif isinstance(content, str):
-        msg["content"] = content + addition
-    else:
-        msg["content"] = addition.strip()
-
-
-def _annotate_code(code_blocks: list, code_block_metadata: list) -> str:
-    """Join code blocks into one annotated program (the form saved as code.py).
-
-    Shared by the trial's top-level code.py and the per-attempt
-    trial_NN/attempt_NN/code.py so they have identical formatting.
-    """
-    parts = []
-    for i, (block, meta) in enumerate(zip(code_blocks, code_block_metadata, strict=False)):
-        header = f"# Code block {i}"
-        if isinstance(meta, dict) and meta.get("regenerated"):
-            header += f" (regenerated at step {meta.get('regenerated_at_idx', '?')})"
-        parts.append(f"{header}\n{block}")
-    return "\n\n".join(parts)
-
-
-def _next_trial_number(output_dir: str | None) -> int:
-    """Next free ``trial_NN`` index in ``output_dir`` (1 if none / no dir).
-
-    Interactive runs one trial per ``run_trial_async`` call but reuses the same
-    per-session ``output_dir``; numbering by the next free index keeps each new
-    trial's trace / handoff / artifacts in its own ``trial_NN`` instead of
-    overwriting ``trial_01``.
-    """
-    if not output_dir or not os.path.isdir(output_dir):
-        return 1
-    import re
-    nums = [
-        int(m.group(1))
-        for name in os.listdir(output_dir)
-        if (m := re.match(r"trial_(\d+)", name))
-    ]
-    return (max(nums) + 1) if nums else 1
 
 
 async def run_trial_async(
@@ -1134,157 +1080,35 @@ async def run_trial_async(
 
             logger.info(f"Code block {code_block_idx} done, {len(code_blocks)} total blocks")
 
-        # ========================================================================
-        # Trial complete
-        # ========================================================================
-        logger.info("Trial execution complete")
-
-        # Build final code with annotations; also drop it into the last attempt's
-        # folder so every attempt — including the final/winning one — has its own
-        # attempt_NN/code.py (this one equals the trial's top-level code.py).
-        final_code = _annotate_code(code_blocks, code_block_metadata)
-        trace.save_attempt_code(final_code)
-
-        # Handle sandbox_rc override for max steps
-        if "executing action in terminated episode" in info_step.get("stderr", ""):
-            info_step["sandbox_rc"] = 0
-
-        stderr = "\n\n".join(stderr_history) if stderr_history else info_step.get("stderr", "")
-
-        log_lines = [
-            "-" * 100,
-            "Generated program:",
-            final_code,
-            "\n\nEnvironment response:",
-            f"  Sandbox failed: {info_step['sandbox_rc']}",
-            f"  Stdout: {info_step['stdout']}",
-            f"  Stderr: {stderr}",
-            f"  Reward: {reward}",
-            f"  Task Completed: {info_step.get('task_completed', 'N/A')}",
-            f"  Terminated: {terminated}, Truncated: {truncated}",
-            f"  Num Regenerations: {num_regenerations}",
-            f"  Num Finishes: {num_finishes}",
-            f"  Num Code Blocks: {len(code_blocks)}",
-            "-" * 100,
-        ]
-
-        # Save artifacts if output_dir configured
-        code_path = None
-        output_dir = session.config.get("output_dir")
-        if output_dir:
-            # Unified per-trial folder: code/logs land in trial_NN/ next to the
-            # LLM trace + handoff (instead of a separate metric-named sibling), so
-            # everything for one trial lives in one place.
-            trial_dir = os.path.join(output_dir, f"trial_{trial:02d}")
-            logger.info(f"Saving trial artifacts to: {trial_dir}")
-            code_path = await asyncio.to_thread(
-                _save_trial_artifacts,
-                session.config,
-                trial,
-                info_step["sandbox_rc"],
-                reward,
-                info_step.get("task_completed", False),
-                final_code,
-                raw_code,
-                all_responses,
-                log_lines,
-                visual_feedback_imgs,
-                trial_dir=trial_dir,
-            )
-            logger.info(f"Trial artifacts saved to: {code_path}")
-
-            # On human-confirmed success, write the Feedback Postprocessor's
-            # input contract (success-log schema draft): task / settings /
-            # final_code / chat_history (incl. verbatim human feedback) /
-            # datetime. This is the single artifact the postprocessor consumes
-            # — it does not re-parse per-attempt traces.
-            if human_finished:
-                try:
-                    handoff_settings = {
-                        "model": args.model,
-                        "env_config": getattr(session, "config_path", None),
-                        "use_visual_feedback": use_visual_feedback,
-                        "use_img_differencing": use_img_differencing,
-                    }
-                    # The full API/tool prompt (perception APIs etc.) the agent saw;
-                    # module ③ needs it to re-derive scene-specific parts from
-                    # perception during the generalize-rewrite step.
-                    api_reference = "\n\n".join(
-                        part["text"]
-                        for msg in clean_base_prompt
-                        for part in (msg.get("content") if isinstance(msg.get("content"), list) else [])
-                        if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
-                    ) or None
-                    handoff_path = await asyncio.to_thread(
-                        trace.write_handoff,
-                        task=task_description,
-                        settings=handoff_settings,
-                        final_code=final_code,
-                        api_reference=api_reference,
-                    )
-                    logger.info(f"Postprocessor handoff written to: {handoff_path}")
-                except Exception as _handoff_exc:  # noqa: BLE001
-                    logger.warning(f"Failed to write postprocessor handoff: {_handoff_exc}")
-
-            # Auxiliary saves that hang off the live env: per-attempt viser
-            # observations, execution-step histories, and the recorded video.
-            await save_auxiliary_artifacts(
-                env=env,
-                output_dir=output_dir,
-                trial=trial,
-                info_step=info_step,
-                reward=reward,
-                record_video=bool(session.config.get("record_video")),
-            )
-        else:
-            logger.info("No output_dir configured, skipping artifact save")
-
-        # task_completed reflects the environment's own reward signal (shown for
-        # reference). The success signal differs by mode:
-        #   - interactive: only the human can declare success (§4.1), via the
-        #     Finish action (human_finished). The model's FINISH never counts.
-        #   - headless/non-interactive: fall back to the env / model finish.
-        task_completed = bool(info_step.get("task_completed", False)) or (terminated and reward > 0)
-        if session.await_user_input_each_turn:
-            success = human_finished
-        else:
-            success = task_completed or num_finishes > 0
-
-        # Emit completion
-        session.state = SessionState.COMPLETE
-        await emit(TrialCompleteEvent(
-            session_id=session.session_id,
-            success=success,
-            total_reward=reward,
-            task_completed=task_completed,
-            num_regenerations=num_regenerations,
-            num_code_blocks=len(code_blocks),
-            summary="\n".join(log_lines),
-        ))
-        await emit(StateUpdateEvent(
-            session_id=session.session_id,
-            state=SessionState.COMPLETE,
-        ))
-
-        trial_end_time = time.time()
-        logger.info(f"Trial completed in {trial_end_time - trial_start_time:.2f} seconds")
-
-        # Cleanup
-        gc.collect()
-
-        return TrialSummary(
+        # ====================================================================
+        # Trial complete -> persist artifacts + handoff, decide success, report.
+        # (see capx/web/trial_finalize.py)
+        # ====================================================================
+        return await finalize_trial(
+            session=session,
+            args=args,
+            trace=trace,
+            env=env,
+            emit=emit,
             trial=trial,
-            success=success,
+            trial_start_time=trial_start_time,
+            code_blocks=code_blocks,
+            code_block_metadata=code_block_metadata,
+            info_step=info_step,
+            stderr_history=stderr_history,
             reward=reward,
             terminated=terminated,
             truncated=truncated,
-            sandbox_rc=info_step["sandbox_rc"],
-            log="\n".join(log_lines),
-            task_completed=task_completed,
-            code_path=code_path,
             num_regenerations=num_regenerations,
             num_finishes=num_finishes,
-            num_code_blocks=len(code_blocks),
+            raw_code=raw_code,
+            all_responses=all_responses,
+            visual_feedback_imgs=visual_feedback_imgs,
+            human_finished=human_finished,
+            use_visual_feedback=use_visual_feedback,
+            use_img_differencing=use_img_differencing,
+            clean_base_prompt=clean_base_prompt,
+            task_description=task_description,
         )
 
     except asyncio.CancelledError as e:
