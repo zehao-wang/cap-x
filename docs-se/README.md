@@ -99,6 +99,7 @@ self-evolve 系统在 agent0 之上**新增 / 部分重新设计**，使其能�
 | [storage.md](storage.md) | `mem/` 存储布局 + 数据 schema + 长期库路径（pipeline 各阶段的数据契约） |
 | [integration.md](integration.md) | 与现有代码对接：`SkillLibrary` 注入点 |
 | [config.md](config.md) | 全部 hyper-params 速查表 |
+| [debugging.md](debugging.md) | develop 阶段逐模块孤立驱动 pipeline 的 debug CLI（`python -m capx.self_evolve.debug`） |
 
 **功能模块**（互不影响，可分别实现；✅ 已实现 / 🔲 待实现）：
 

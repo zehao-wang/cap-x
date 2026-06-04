@@ -1,11 +1,29 @@
 # Feedback Postprocessor
 
 > **状态**: 🔲 待实现
-> **读 → 写**: 一次**人确认成功**的 trial（来自 [01-interactive-loop.md](01-interactive-loop.md)）
+> **读 → 写**: 一次**人确认成功**的 trial，经 **postprocess handoff**（来自
+> [01-interactive-loop.md](01-interactive-loop.md)）读入
 > → `mem/history_pool/<task>__<ts>.json`（通用化后的 `final_code` + 全文）
 > **和** 同名 `<task>__<ts>.digest.md`（distill 出的 sourced digest）
-> **依赖契约**: [storage.md](storage.md)（success log schema + digest schema）、
-> [concepts.md](concepts.md)（atomic task / 超参化）
+> **依赖契约**: [storage.md](storage.md)（**postprocess handoff schema** + success log schema +
+> digest schema）、[concepts.md](concepts.md)（atomic task / 超参化）
+
+## 输入契约：postprocess handoff（live-loop 落盘）
+
+本模块**唯一的输入**是 live loop 在人点 Finish 确认成功时写到 trial 根目录的
+`postprocess_handoff.json`（schema 见 [storage.md](storage.md)），**不**再去反解 per-attempt 的
+trace。读取/校验走 `capx.self_evolve.handoff.load_handoff()`，它把 handoff 映射到本模块入口
+`run_feedback_postprocessor(...)` 的关键字参数：
+
+- `original_code` ← handoff `final_code`（人确认成功的码，rewrite 的安全基线）
+- `task` / `task_description` ← handoff `task`
+- `settings` ← handoff `settings`
+- `chat_history` ← handoff `chat_history`（含 verbatim 人 feedback 作为一等 turn，供下面 distill 的
+  `[#idx]` 直接溯源）
+
+> 实现态：core 已是依赖注入式（`query_fn` / `judge_fn` / `store`），rewrite 仍需**与环境交互**由
+> `judge_fn` 落到真 sim/真机；离线只想验证「读 log + distill agent 产出」可用
+> `python -m capx.self_evolve.debug postprocessor <trial>`（见 [debugging.md](debugging.md)）。
 
 由于 human feedback 常带额外信息，我们在尝试时应**先尽量用这些信息让任务成功**。成功之后，
 Feedback Postprocessor 负责把代码改得更通用：

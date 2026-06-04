@@ -27,6 +27,13 @@ from capx.self_evolve.schemas import (
     slugify_task,
 )
 from capx.self_evolve.storage import MemStore, default_mem_root, make_history_id
+from capx.self_evolve.handoff import (
+    HANDOFF_FILENAME,
+    HANDOFF_SCHEMA,
+    Handoff,
+    find_handoffs,
+    load_handoff,
+)
 from capx.self_evolve.feedback_postprocessor import (
     PostprocessResult,
     distill_experience,
@@ -87,6 +94,11 @@ __all__ = [
     "MemStore",
     "default_mem_root",
     "make_history_id",
+    "Handoff",
+    "load_handoff",
+    "find_handoffs",
+    "HANDOFF_FILENAME",
+    "HANDOFF_SCHEMA",
     "run_feedback_postprocessor",
     "generalize_by_rewrite",
     "distill_experience",

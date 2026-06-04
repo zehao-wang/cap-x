@@ -28,10 +28,40 @@ capx/atomic_task_library/*.py    # 每个文件 = atomic task 的函数 + 其 co
 > 注意：候选**不直接改** `capx/skills/library.py`；本系统沉淀的新能力写入上面这两个**新模块**。
 > 注入到 agent 可见工具的方式见 [integration.md](integration.md)。
 
+## postprocess handoff schema（`<trial_dir>/postprocess_handoff.json`）
+
+> **live-loop → Feedback Postprocessor 的输入契约。** 由 [01-interactive-loop.md](01-interactive-loop.md)
+> 的 trace logger（`capx/utils/trace_logger.py` 的 `write_handoff`）在**人点 Finish 确认成功**
+> （`human_finished`）时，写到该 trial 根目录；由 [03-feedback-postprocessor.md](03-feedback-postprocessor.md)
+> **唯一消费**——postprocessor 读这一个工件即可，不必反解 per-attempt 的
+> `attempt_NN/{events,llm_trace}.jsonl`。读取/校验入口：`capx.self_evolve.handoff.load_handoff()`。
+
+```jsonc
+{
+  "schema": "postprocess_handoff/v1",
+  "task": "<本次 trial 的任务（短名/描述）>",
+  "settings": { "model": "...", "env_config": "...", /* visual flags 等 */ },
+  "success": { "signal": "human_finished", "attempt": 1 },  // 人确认成功落在哪个 attempt
+  "final_code": "<人确认成功的代码，未通用化——postprocessor 由它出发做 rewrite>",
+  "human_feedback": [ { "index": 17, "attempt": 0, "text": "<verbatim 人 feedback>" } ],
+  "chat_history": [ /* 跨 attempt 线性重建的完整对话，见下 */ ],
+  "datetime": "YYYY-MM-DD HH:MM:SS"
+}
+```
+
+- **`chat_history`**：把各 `attempt_NN/` 的 `events.jsonl`（时序）与 `llm_trace.jsonl`（LLM 全文）
+  合并成**一条线性对话**，每项带 0-based `index`（即下文 success log / digest 里 `[#idx]` 溯源的下标）。
+  role 取值：`task`（任务，#0）/ `assistant`（模型每次输出，含 `phase`/`turn`）/ `tool`（工具步）/
+  `human_feedback`（verbatim 人 feedback，一等 turn）/ `human_finish`（成功信号）。
+- **为什么单独立约**：人点的 Finish 是 interactive 唯一的 success signal，必须显式落盘；raw human
+  feedback 也必须是机器可读的一等 turn，下游才能直接 `[#idx]` 引用，而不是从 prompt 脚手架里反解。
+- postprocessor 入 pool 后的产物是下面的 **success log**（已通用化的 `final_code` + 同一 `chat_history`）；
+  handoff 是它的**输入**，success log 是它的**输出**，两者 `chat_history` 同源。
+
 ## success log schema（`history_pool/*.json`）
 
-> 由 [03-feedback-postprocessor.md](03-feedback-postprocessor.md) 写入；由
-> [04-update-planner.md](04-update-planner.md) 消费。
+> 由 [03-feedback-postprocessor.md](03-feedback-postprocessor.md) 写入（其输入是上面的
+> **postprocess handoff**）；由 [04-update-planner.md](04-update-planner.md) 消费。
 
 ```jsonc
 {

@@ -98,3 +98,19 @@
 - [ ] **live-gated**：下次真机交互跑通一次"人确认成功"，确认 trial 根真出 `postprocess_handoff.json`
       且 chat_history 含 verbatim feedback；通过再标 ✅。
 - [ ] （可选）下游 postprocessor agent 真消费此 handoff（docs-se/03 仍 🔲 待实现）。
+
+### ✅ 已完成（接续）：handoff 契约文档 + 模块化 debug 接口
+- docs：`storage.md` 补 **postprocess handoff schema**（live-loop→postprocessor 输入契约）；
+  `03-feedback-postprocessor.md` 补「输入契约」节；新增 `docs-se/debugging.md` 并挂进 README 文档地图。
+- code：`capx/self_evolve/handoff.py`（`load_handoff`/`Handoff.postprocessor_kwargs`/`find_handoffs`，
+  契约校验=「log 落盘对不对」判据）；`capx/self_evolve/debug.py`（CLI 三子命令 + 可注入
+  `make_logged_query_fn`/`auto_accept_judge`/`reject_judge`/`interactive_judge`）；`__init__` 导出。
+  - `debug handoff <trial>`：①feedback log 落盘检查（无 LLM）。
+  - `debug postprocessor <trial>`：③读 handoff→rewrite+distill，dry-run 写临时 mem；`--skip-rewrite` 隔离 distill。
+  - `debug planner --mem --tools-only`：④先打印 History Reader 工具暴露的 pool 视图，再可跑 proposer↔reviewer。
+- 验证：`tests/test_debug_harness.py`（7 passed）；自演化全测 72 passed；三命令对真实/seed 数据手验通过。
+
+### 待办（live-gated / 后续）
+- [ ] 真机跑通一次成功 → 用 `debug handoff` 验证真出 handoff（接上一节 live-gated 项）。
+- [ ] postprocessor/planner 用真 LLM（openrouter）跑一遍，肉眼核对 agent 产出。
+- [ ] ⑤Evaluator/⑥Heartbeat 的孤立驱动暂未进 debug CLI（更重，需 sim/cron）。
