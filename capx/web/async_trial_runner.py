@@ -72,6 +72,29 @@ logger = logging.getLogger(__name__)
 MULTITURN_LIMIT = 30
 
 
+def _append_task_to_prompt(full_prompt: list, task_text: str) -> None:
+    """Fold the operator's runtime task into the last prompt message in place.
+
+    Handles both content shapes the harness uses: a list of content parts whose
+    first part is the ``{"type": "text", "text": ...}`` block, or a plain string.
+    """
+    addition = f"\n\nThe task for this trial is:\n{task_text}"
+    if not full_prompt:
+        return
+    msg = full_prompt[-1]
+    content = msg.get("content")
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and "text" in part:
+                part["text"] = (part.get("text") or "") + addition
+                return
+        content.insert(0, {"type": "text", "text": addition.strip()})
+    elif isinstance(content, str):
+        msg["content"] = content + addition
+    else:
+        msg["content"] = addition.strip()
+
+
 async def run_trial_async(
     session: Session,
     args: LaunchArgsCompat,
@@ -98,6 +121,9 @@ async def run_trial_async(
     # Tracked here so the finally block can tear it down on every exit path and
     # not leak a worker thread per trial.
     env_executor = None
+    # Real-robot low-level env running a background live-preview daemon, if any.
+    # Tracked so the finally block stops it on every exit path.
+    live_preview_env = None
 
     # Helper to emit events
     async def emit(event: WSEventBase) -> None:
@@ -224,6 +250,13 @@ async def run_trial_async(
             if low_level_env is not None and hasattr(env, "snapshot_state")
             else None
         )
+        # Real-robot envs expose a background live-preview daemon: keep the viser
+        # Camera View showing a live ZED RGB-D feed while the session is idle
+        # (waiting for the task / a human / while the LLM streams), not just
+        # during commanded motion. No-op for sim backends.
+        if low_level_env is not None and hasattr(low_level_env, "start_live_preview"):
+            await run_in_env_thread(low_level_env.start_live_preview)
+            live_preview_env = low_level_env
         # Per-trial artifact dir for SAM3/Molmo intermediate dumps. The reduced
         # APIs are constructed against env.low_level_env, so set both to be
         # robust to either being read by resolve_dump_dir.
@@ -261,6 +294,76 @@ async def run_trial_async(
             message="Environment ready",
             description_content=actual_task_prompt,
         ))
+
+        # ====================================================================
+        # Runtime task gate (prompt_for_task configs, e.g. the real robot).
+        # The env is up — arm homed and, with the live-preview daemon running,
+        # the viser Camera View now shows a live ZED feed. Instead of
+        # auto-starting whatever the baked-in prompt implies, pause and ask the
+        # operator to type the task. The typed text is folded into the task
+        # prompt BEFORE the clean-base snapshot / visual-feedback / VDM steps
+        # below, so every downstream consumer (and feedback re-runs) sees it.
+        # ====================================================================
+        prompt_for_task = bool(session.env_factory.get("cfg", {}).get("prompt_for_task", False))
+        if prompt_for_task:
+            # Drain any stale injections so we don't auto-consume a leftover.
+            while not session.user_injection_queue.empty():
+                try:
+                    session.user_injection_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            session.state = SessionState.AWAITING_USER_INPUT
+            await emit(StateUpdateEvent(
+                session_id=session.session_id,
+                state=SessionState.AWAITING_USER_INPUT,
+            ))
+            await emit(UserPromptRequestEvent(
+                session_id=session.session_id,
+                current_state_summary=(
+                    "请输入本次 trial 的任务（例如：把红色方块放到盘子里）。"
+                ),
+                executed_code_blocks=0,
+            ))
+            task_text = None
+            while True:
+                if is_cancelled():
+                    raise asyncio.CancelledError("Cancelled while awaiting task")
+                payload = await session.user_injection_queue.get()
+                # Finish before any task → nothing to run; end the trial cleanly.
+                if payload == FINISH_COMMAND:
+                    task_text = None
+                    break
+                # Reset / empty send before a task is meaningless here — keep
+                # waiting rather than starting an unspecified task.
+                if payload == RESET_COMMAND or not payload or not payload.strip():
+                    continue
+                task_text = payload.strip()
+                break
+
+            if task_text is None:
+                session.state = SessionState.COMPLETE
+                await emit(TrialCompleteEvent(
+                    session_id=session.session_id,
+                    success=False,
+                    total_reward=0.0,
+                    task_completed=False,
+                    num_regenerations=0,
+                    num_code_blocks=0,
+                    summary="No task was given before the session ended.",
+                ))
+                await emit(StateUpdateEvent(
+                    session_id=session.session_id,
+                    state=SessionState.COMPLETE,
+                ))
+                return None
+
+            session.state = SessionState.RUNNING
+            await emit(StateUpdateEvent(
+                session_id=session.session_id,
+                state=SessionState.RUNNING,
+            ))
+            _append_task_to_prompt(obs["full_prompt"], task_text)
+            actual_task_prompt = (actual_task_prompt or "") + f"\n\nTask: {task_text}"
 
         # Enable video capture if configured
         if session.config.get("record_video") and hasattr(env, "enable_video_capture"):
@@ -537,11 +640,18 @@ async def run_trial_async(
                     action, fb_text = await _wait_for_human(reward)
                     if action == "finish":
                         human_finished = True
+                        # The sole interactive success signal — record it as a
+                        # first-class human turn so the postprocessor handoff
+                        # can mark which attempt the human confirmed.
+                        trace.log_human(kind="finish", turn=turn_number)
                         break
                     if action != "feedback":
                         continue  # empty send / legacy reset: keep waiting
                     feedback_text = fb_text
                     logger.info(f"Human feedback: {feedback_text[:100]}...")
+                    # Log the verbatim feedback as a human turn (before the
+                    # distiller / reset) so it lands on the attempt it judged.
+                    trace.log_human(kind="feedback", text=feedback_text, turn=turn_number)
 
                     # Key failure of the attempt just run — carried into the
                     # regeneration as console evidence (NOT the full code), bounded
@@ -1040,6 +1150,29 @@ async def run_trial_async(
             )
             logger.info(f"Trial artifacts saved to: {code_path}")
 
+            # On human-confirmed success, write the Feedback Postprocessor's
+            # input contract (success-log schema draft): task / settings /
+            # final_code / chat_history (incl. verbatim human feedback) /
+            # datetime. This is the single artifact the postprocessor consumes
+            # — it does not re-parse per-attempt traces.
+            if human_finished:
+                try:
+                    handoff_settings = {
+                        "model": args.model,
+                        "env_config": getattr(session, "config_path", None),
+                        "use_visual_feedback": use_visual_feedback,
+                        "use_img_differencing": use_img_differencing,
+                    }
+                    handoff_path = await asyncio.to_thread(
+                        trace.write_handoff,
+                        task=task_description,
+                        settings=handoff_settings,
+                        final_code=final_code,
+                    )
+                    logger.info(f"Postprocessor handoff written to: {handoff_path}")
+                except Exception as _handoff_exc:  # noqa: BLE001
+                    logger.warning(f"Failed to write postprocessor handoff: {_handoff_exc}")
+
             # Auxiliary saves that hang off the live env: per-attempt viser
             # observations, execution-step histories, and the recorded video.
             await save_auxiliary_artifacts(
@@ -1139,6 +1272,13 @@ async def run_trial_async(
         return None
 
     finally:
+        # Stop the real-robot live-preview daemon (no-op for sim) so it doesn't
+        # keep reading the cameras after the trial ends.
+        if live_preview_env is not None:
+            try:
+                live_preview_env.stop_live_preview()
+            except Exception as _preview_exc:
+                logger.warning(f"Failed to stop live preview: {_preview_exc}")
         # Render the human-readable trace.md from the live-written events on
         # every exit path (success, Stop-button cancel, or error) — the JSONL
         # files are written live, this just renders the readable timeline.

@@ -223,6 +223,26 @@ class TraceLogger:
                 "n_images": n_images,
             })
 
+    def log_human(self, *, kind: str, text: str = "", turn: int | None = None) -> None:
+        """Record a human action as a first-class event.
+
+        ``kind`` is ``"feedback"`` (verbatim operator feedback that triggers a
+        reset-and-retry) or ``"finish"`` (the human-confirmed success signal —
+        the *only* success signal in interactive mode). Logging these as events
+        means the Feedback Postprocessor can read the human turns and the
+        success marker straight from the trace, instead of reverse-parsing them
+        out of LLM prompt scaffolding."""
+        with self._lock:
+            self._seq += 1
+            self._record_event({
+                "seq": self._seq,
+                "ts": _now_iso(),
+                "type": "human",
+                "kind": kind,
+                "turn": turn,
+                "text": text,
+            })
+
     def finalize(self) -> None:
         """Render the current attempt's ``events`` into a readable ``trace.md``."""
         with self._lock:
@@ -244,6 +264,14 @@ class TraceLogger:
                     lines.append("")
                     lines.append("> " + preview.replace("\n", "\n> "))
                 lines.append("")
+            elif ev.get("type") == "human":
+                kind = ev.get("kind", "?")
+                lines.append(f"## [{ev['seq']}] 🧑 HUMAN · {kind}")
+                text = (ev.get("text") or "").strip()
+                if text:
+                    lines.append("")
+                    lines.append("> " + text.replace("\n", "\n> "))
+                lines.append("")
             else:
                 head = f"- 🛠 [{ev['seq']}] {ev.get('tool_name', 'tool')}"
                 if ev.get("block_index") is not None:
@@ -256,6 +284,107 @@ class TraceLogger:
                     lines.append(f"  - {text[:240]}")
         self.md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    # ------------------------------------------------------- postprocess handoff
+    def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        try:
+            with path.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        out.append(json.loads(line))
+        except FileNotFoundError:
+            pass
+        return out
+
+    def _build_chat_history(self, task: str) -> list[dict[str, Any]]:
+        """Reconstruct one linear, sourced conversation across every attempt.
+
+        Walks each ``attempt_NN/`` in order and merges its ``events.jsonl``
+        (chronological LLM + tool + human steps) with the *full* LLM output
+        pulled from the same attempt's ``llm_trace.jsonl``. Every entry gets a
+        stable 0-based ``index`` — this is the ``[#message_index]`` the digest
+        step sources against (see docs-se/storage.md)."""
+        chat: list[dict[str, Any]] = [{
+            "index": 0, "role": "task", "attempt": None, "content": task,
+        }]
+        attempt_dirs = sorted(
+            d for d in self.base_dir.glob("attempt_*") if d.is_dir()
+        )
+        for adir in attempt_dirs:
+            attempt = int(adir.name.split("_")[-1])
+            # llm_call -> full output content (events.jsonl only keeps a preview)
+            out_by_call: dict[int, dict[str, Any]] = {}
+            for rec in self._read_jsonl(adir / "llm_trace.jsonl"):
+                out_by_call[rec.get("llm_call")] = rec.get("output") or {}
+            for ev in self._read_jsonl(adir / "events.jsonl"):
+                etype = ev.get("type")
+                if etype == "llm":
+                    out = out_by_call.get(ev.get("llm_call"), {})
+                    chat.append({
+                        "index": len(chat), "role": "assistant",
+                        "attempt": attempt, "phase": ev.get("phase"),
+                        "turn": ev.get("turn"),
+                        "content": out.get("content"),
+                        "reasoning": out.get("reasoning"),
+                    })
+                elif etype == "tool":
+                    chat.append({
+                        "index": len(chat), "role": "tool", "attempt": attempt,
+                        "tool_name": ev.get("tool_name"),
+                        "content": ev.get("text"),
+                    })
+                elif etype == "human":
+                    chat.append({
+                        "index": len(chat),
+                        "role": f"human_{ev.get('kind', 'action')}",
+                        "attempt": attempt, "content": ev.get("text"),
+                    })
+        return chat
+
+    def write_handoff(
+        self,
+        *,
+        task: str,
+        settings: dict[str, Any],
+        final_code: str,
+        success_attempt: int | None = None,
+        filename: str = "postprocess_handoff.json",
+    ) -> Path:
+        """Write the Feedback Postprocessor's input contract at the trial root.
+
+        Assembles the human-confirmed success trial into one JSON aligned with
+        the success-log schema (docs-se/storage.md): ``task`` / ``settings`` /
+        ``final_code`` (the human-confirmed code, *pre*-generalization) /
+        ``chat_history`` (full conversation incl. the verbatim human feedback) /
+        ``datetime``, plus an explicit ``success`` marker and a convenience
+        ``human_feedback`` list. The postprocessor reads this directly — it does
+        not have to re-parse per-attempt traces. Returns the written path."""
+        chat = self._build_chat_history(task)
+        if success_attempt is None:
+            finishes = [e for e in chat if e["role"] == "human_finish"]
+            if finishes:
+                success_attempt = finishes[-1]["attempt"]
+        human_feedback = [
+            {"index": e["index"], "attempt": e["attempt"], "text": e["content"]}
+            for e in chat if e["role"] == "human_feedback"
+        ]
+        handoff = {
+            "schema": "postprocess_handoff/v1",
+            "task": task,
+            "settings": settings,
+            "success": {"signal": "human_finished", "attempt": success_attempt},
+            "final_code": final_code,
+            "human_feedback": human_feedback,
+            "chat_history": chat,
+            "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        path = self.base_dir / filename
+        path.write_text(
+            json.dumps(handoff, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return path
+
 
 class NullTraceLogger:
     """No-op trace logger used when no output directory is configured."""
@@ -266,8 +395,14 @@ class NullTraceLogger:
     def log_tool(self, **kwargs: Any) -> None:  # noqa: D102
         pass
 
+    def log_human(self, **kwargs: Any) -> None:  # noqa: D102
+        pass
+
     def new_attempt(self) -> None:  # noqa: D102
         pass
 
     def finalize(self) -> None:  # noqa: D102
         pass
+
+    def write_handoff(self, **kwargs: Any) -> Any:  # noqa: D102
+        return None
