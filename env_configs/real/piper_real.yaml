@@ -41,6 +41,10 @@ env:
     # scripts. See scripts_realbot/zed_service/README.md.
     piper_zed_source: service
     piper_zed_service_socket: /tmp/piper/zed.sock
+    # Interactive: after the env is up (arm homed, ZED live in the viser Camera
+    # View) the web UI pauses and asks the operator to type the task before the
+    # first code generation, instead of auto-starting from a baked-in prompt.
+    prompt_for_task: true
     # Wrist-mounted RealSense D435* observation. Exposes:
     #   obs["robot0_eye_in_hand"]["images"]["rgb"]
     #   obs["robot0_eye_in_hand"]["images"]["depth"]

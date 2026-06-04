@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Any
 
@@ -246,6 +247,14 @@ class PiperSetupMixin:
         )
         self._last_viser_scene_update_time = 0.0
         self._urdf_n_actuated = 0
+        # Serializes every hardware read (CAN joints + ZED service socket +
+        # RealSense pipeline), none of which is thread-safe. Held only inside
+        # _update_from_hardware so the live-preview daemon, motion loops, and the
+        # agent's get_observation never read the same socket concurrently.
+        self._hw_lock = threading.Lock()
+        self._live_preview_thread: threading.Thread | None = None
+        self._live_preview_stop = threading.Event()
+        self._live_preview_hz = float(os.environ.get("PIPER_LIVE_PREVIEW_HZ", "5"))
         if not viser_debug:
             return
         try:

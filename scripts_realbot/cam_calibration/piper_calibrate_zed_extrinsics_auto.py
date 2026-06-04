@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from capx.envs.simulators.piper_real import _Zed2iBridge  # noqa: E402
+from capx.envs.simulators.piper.zed_service_client import _ZedServiceClient  # noqa: E402
 from capx.envs.simulators.piper.common import (  # noqa: E402
     PIPER_GRIPPER_CONTACT_EFFORT,
     PIPER_GRIPPER_EFFORT,
@@ -46,7 +47,7 @@ from capx.integrations.piper.control import (  # noqa: E402
     _init_piper_pose_planner,
     _resolve_piper_mesh,
 )
-from scripts.cam_calibration.piper_calibrate_zed_extrinsics import (  # noqa: E402
+from scripts_realbot.cam_calibration.piper_calibrate_zed_extrinsics import (  # noqa: E402
     detect_charuco,
     detect_checkerboard,
     grab_board,
@@ -278,20 +279,26 @@ class PiperDriver:
 
 
 def _start_zed(args) -> tuple[Any, np.ndarray, np.ndarray, Callable]:
-    zed_width, zed_height, zed_fps = _zed_capture_config()
-    zed = _Zed2iBridge(
-        bridge_script=os.environ.get(
-            "PIPER_ZED_BRIDGE",
-            str(Path.home() / "Documents/Projects/robodata_Agilex/camera/zed_bridge.py"),
-        ),
-        bridge_python=os.environ.get("ZED_BRIDGE_PYTHON", sys.executable),
-        fps=zed_fps,
-        width=zed_width,
-        height=zed_height,
-        use_depth=False,
-    )
-    print(f"[auto-calib] Starting ZED bridge at {zed_width}x{zed_height}@{zed_fps} ...")
-    zed.start()
+    if args.zed_source == "service":
+        zed = _ZedServiceClient(socket_path=args.zed_socket)
+        print(f"[auto-calib] Connecting to ZED service at {args.zed_socket} ...")
+        zed.start()
+        print(f"[auto-calib] ZED service ready at {zed.width}x{zed.height}")
+    else:
+        zed_width, zed_height, zed_fps = _zed_capture_config()
+        zed = _Zed2iBridge(
+            bridge_script=os.environ.get(
+                "PIPER_ZED_BRIDGE",
+                str(Path.home() / "Documents/Projects/robodata_Agilex/camera/zed_bridge.py"),
+            ),
+            bridge_python=os.environ.get("ZED_BRIDGE_PYTHON", sys.executable),
+            fps=zed_fps,
+            width=zed_width,
+            height=zed_height,
+            use_depth=False,
+        )
+        print(f"[auto-calib] Starting ZED bridge at {zed_width}x{zed_height}@{zed_fps} ...")
+        zed.start()
     K = zed.intrinsics_matrix()
     D = np.zeros(5, dtype=np.float64)
     print(f"[auto-calib] ZED intrinsics: fx={K[0,0]:.1f} fy={K[1,1]:.1f} "
@@ -437,8 +444,8 @@ def _solve_and_write(captures: list[Capture], output_path: Path):
     return R_base_cam, t_base_cam, rpy, residual_std_mm, per_pose_residual_mm
 
 
-def _draw_calibrated_frustum(server, K, R_base_cam, t_base_cam):
-    w, h, _ = _zed_capture_config()
+def _draw_calibrated_frustum(server, K, R_base_cam, t_base_cam, zed_wh):
+    w, h = zed_wh
     fov_y = 2.0 * float(np.arctan2(0.5 * float(h), float(K[1, 1])))
     server.scene.add_camera_frustum(
         "/calibrated_zed",
@@ -520,8 +527,20 @@ def parse_args():
         ROOT / "env_configs/real/piper_zed_calibration_poses.json"
     ))
     p.add_argument("--captures-dir", default="")
+    p.add_argument(
+        "--zed-source",
+        choices=["service", "bridge"],
+        default=os.environ.get("PIPER_ZED_SOURCE", "service"),
+        help="ZED frame source: 'service' (zed_depth_service.py over a Unix socket) "
+        "or 'bridge' (legacy subprocess zed_bridge.py). Default: service.",
+    )
+    p.add_argument(
+        "--zed-socket",
+        default=os.environ.get("PIPER_ZED_SERVICE_SOCKET", "/tmp/piper/zed.sock"),
+        help="Unix socket path for the ZED service (when --zed-source=service).",
+    )
     p.add_argument("--can-interface", default=os.environ.get("PIPER_CAN_INTERFACE", "socketcan"))
-    p.add_argument("--can-channel", default=os.environ.get("PIPER_CAN_CHANNEL", "can1"))
+    p.add_argument("--can-channel", default=os.environ.get("PIPER_CAN_CHANNEL", "can0"))
     p.add_argument("--can-bitrate", type=int, default=int(os.environ.get("PIPER_CAN_BITRATE", "1000000")))
     p.add_argument("--viser-port", type=int, default=8201)
     p.add_argument("--detect-timeout", type=float, default=2.5)
@@ -626,7 +645,7 @@ def main():
         )
         set_status("returned to 0 pose." if reached else "0 pose was not reached.")
 
-    if zed is not None:
+    if zed is not None and hasattr(zed, "set_auto_exposure_gain"):
         with server.gui.add_folder("Camera (ZED)"):
             auto_cb = server.gui.add_checkbox("Auto exposure / gain", initial_value=True)
             exposure_slider = server.gui.add_slider(
@@ -774,7 +793,7 @@ def main():
             _write_json_atomic(metrics_path, metrics)
             _print_metrics(captures, metrics)
             print(f"  metrics json     : {metrics_path}")
-            _draw_calibrated_frustum(server, K, solved[0], solved[1])
+            _draw_calibrated_frustum(server, K, solved[0], solved[1], (zed.width, zed.height))
 
             warn = " Residual is high (>20 mm)." if max(metrics["residual_std_xyz_mm"]) > 20.0 else ""
             progress_md.content = (

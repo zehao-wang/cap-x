@@ -15,6 +15,24 @@ class PiperIOMixin:
     def task_completed(self) -> bool:
         return False
 
+    def is_connected(self, max_age: float = 2.0) -> bool:
+        """Best-effort check that the PIPER CAN link is up and streaming joints.
+
+        The guided reset wizard's connection step loops on this. We treat the
+        arm as connected when a joint-state message reads back; a raised
+        exception or a missing message means CAN is down / the arm is unpowered.
+        (``max_age`` mirrors the franka signature; the piper SDK does not expose
+        a per-message timestamp, so a successful read is the liveness signal.)
+        """
+        piper = getattr(self, "_piper", None)
+        if piper is None:
+            return False
+        try:
+            msgs = piper.GetArmJointMsgs()
+        except Exception:
+            return False
+        return msgs is not None and getattr(msgs, "joint_state", None) is not None
+
     def get_observation(self) -> dict:
         self._update_from_hardware()
         return self.obs
@@ -82,10 +100,27 @@ class PiperIOMixin:
         return obs.get("robot0_eye_in_hand", {}).get("images", {}).get("rgb")
 
     def close(self) -> None:
+        # Stop the live-preview daemon first so it isn't mid-read when we tear
+        # down the cameras / viser.
+        if hasattr(self, "stop_live_preview"):
+            try:
+                self.stop_live_preview()
+            except Exception:
+                pass
         if self._wrist_cam is not None:
             self._wrist_cam.stop()
         if self._zed is not None:
             self._zed.stop()
+        # Release the viser server so its port (CAPX_VISER_PORT) is freed for the
+        # next env instead of forcing viser to auto-increment and leaving a stale
+        # server the web proxy could latch onto.
+        viser_server = getattr(self, "viser_server", None)
+        if viser_server is not None:
+            try:
+                viser_server.stop()
+            except Exception:
+                pass
+            self.viser_server = None
 
     def __del__(self) -> None:
         try:

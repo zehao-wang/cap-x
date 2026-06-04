@@ -205,6 +205,45 @@ class PiperViserMixin:
             )
             self.image_frustum_handles["robot0_robotview"] = self.image_frustum_handle
 
+    # ── Live preview (background ~5Hz refresh) ──────────────────────────────────
+    # Without this, the viser "Camera View" panel only refreshes during a
+    # commanded motion (motion.py) or on reset(); interactive sessions sit idle
+    # most of the time (waiting for a task / a human / while the LLM streams), so
+    # the panel froze on a stale frame. This daemon re-reads the cameras + redraws
+    # viser at a fixed rate the whole time the env is alive. Hardware reads go
+    # through _update_from_hardware, which holds _hw_lock, so running alongside a
+    # motion is safe (the two just serialize on the lock).
+    def start_live_preview(self) -> None:
+        if self.viser_server is None:
+            return
+        existing = getattr(self, "_live_preview_thread", None)
+        if existing is not None and existing.is_alive():
+            return
+        self._live_preview_stop.clear()
+        self._live_preview_thread = threading.Thread(
+            target=self._live_preview_loop, name="piper-live-preview", daemon=True
+        )
+        self._live_preview_thread.start()
+
+    def _live_preview_loop(self) -> None:
+        period = 1.0 / max(getattr(self, "_live_preview_hz", 5.0), 1e-3)
+        while not self._live_preview_stop.is_set():
+            try:
+                self._update_from_hardware()
+                self._update_viser_server()
+            except Exception:
+                pass
+            self._live_preview_stop.wait(period)
+
+    def stop_live_preview(self) -> None:
+        stop = getattr(self, "_live_preview_stop", None)
+        if stop is not None:
+            stop.set()
+        thread = getattr(self, "_live_preview_thread", None)
+        if thread is not None:
+            thread.join(timeout=2.0)
+        self._live_preview_thread = None
+
     def update_viser_image(self, frame: np.ndarray) -> None:
         if self.viser_server is None:
             return

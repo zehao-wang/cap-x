@@ -28,6 +28,16 @@ class PiperMotionMixin:
             max_steps=max_steps,
         )
 
+    def return_to_rest_pose(self) -> None:
+        """Open the gripper and drive all joints back to the home (rest) pose.
+
+        This is the real-robot reset primitive the guided reset wizard calls on
+        the initial reset and on every feedback retry — a physical arm has no
+        sim snapshot to restore to, so a re-home is the canonical "reset".
+        """
+        self._set_gripper(1.0)
+        self.goto_home_blocking()
+
     def move_to_joints_blocking(
         self,
         joints: np.ndarray,

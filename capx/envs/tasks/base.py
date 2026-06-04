@@ -53,6 +53,11 @@ class CodeExecEnvConfig:
     privileged: bool = False
     enable_render: bool = True
     viser_debug: bool = False
+    # Interactive web flow: when True the task is NOT baked into `prompt` but
+    # asked from the operator at runtime. After the env is initialized the runner
+    # pauses (AWAITING_USER_INPUT) for a typed task before the first generation,
+    # instead of auto-starting. Used by real-robot configs (e.g. Piper).
+    prompt_for_task: bool = False
     # Optional runtime knobs forwarded to low-level env / APIs.
     # These are primarily used by real-robot setups (e.g., Piper).
     piper_planner_timesteps: int | None = None

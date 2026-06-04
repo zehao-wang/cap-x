@@ -165,6 +165,28 @@ class _ZedCamera:
         if self._args.gain >= 0:
             cam.set_camera_settings(sl.VIDEO_SETTINGS.GAIN, int(self._args.gain))
 
+    def set_camera_settings(
+        self, *, auto: bool, exposure: Optional[int] = None, gain: Optional[int] = None
+    ) -> None:
+        """Apply exposure/gain at runtime (wire method ``set_camera``).
+
+        ``auto=True`` re-enables the ZED's AEC/AGC. Otherwise the given fixed
+        ``exposure``/``gain`` (0..100) are applied — setting either disables auto on
+        the ZED. Takes the same lock as ``grab_rgbd`` so it never races a grab.
+        """
+        import pyzed.sl as sl  # noqa: PLC0415
+
+        with self._lock:
+            if self._cam is None:
+                raise RuntimeError("camera not open")
+            if auto:
+                self._cam.set_camera_settings(sl.VIDEO_SETTINGS.AEC_AGC, 1)
+                return
+            if exposure is not None:
+                self._cam.set_camera_settings(sl.VIDEO_SETTINGS.EXPOSURE, int(exposure))
+            if gain is not None:
+                self._cam.set_camera_settings(sl.VIDEO_SETTINGS.GAIN, int(gain))
+
     def grab_rgbd(self) -> Optional[tuple[np.ndarray, np.ndarray, int]]:
         """Grab one frame; return (rgb RGB uint8 HxWx3, depth float32 HxW m NaN-invalid, ts_ns).
 
@@ -267,6 +289,20 @@ class _ZedService:
         rgb, depth, ts_ns = result
         _send_payload(conn, _build_frame_payload(self._camera, rgb, depth, ts_ns))
 
+    def _handle_set_camera(self, conn: socket.socket, req: dict[str, Any]) -> None:
+        try:
+            exposure = req.get("exposure")
+            gain = req.get("gain")
+            self._camera.set_camera_settings(
+                auto=bool(req.get("auto", False)),
+                exposure=None if exposure is None else int(exposure),
+                gain=None if gain is None else int(gain),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _send_json(conn, {"v": 1, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            return
+        _send_json(conn, {"v": 1, "ok": True})
+
     def _handle_ping(self, conn: socket.socket) -> None:
         _send_json(
             conn,
@@ -285,15 +321,18 @@ class _ZedService:
             while not self._stop.is_set():
                 try:
                     req = _recv_request(conn)
+                    method = req.get("method")
+                    if method == "get_frame":
+                        self._handle_get_frame(conn)
+                    elif method == "set_camera":
+                        self._handle_set_camera(conn, req)
+                    elif method == "ping":
+                        self._handle_ping(conn)
+                    else:
+                        _send_json(conn, {"v": 1, "ok": False, "error": f"unknown method {method!r}"})
                 except (ConnectionError, OSError, ValueError, json.JSONDecodeError):
+                    # Client closed / dropped the connection (incl. BrokenPipe mid-send) — drop it quietly.
                     break
-                method = req.get("method")
-                if method == "get_frame":
-                    self._handle_get_frame(conn)
-                elif method == "ping":
-                    self._handle_ping(conn)
-                else:
-                    _send_json(conn, {"v": 1, "ok": False, "error": f"unknown method {method!r}"})
         finally:
             conn.close()
 

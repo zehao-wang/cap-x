@@ -49,22 +49,33 @@ _viser_port_cache: int | None = None
 
 
 def _find_viser_port() -> int | None:
-    """Probe candidate ports to find a running Viser server (cached)."""
+    """Probe candidate ports to find a running Viser server (cached).
+
+    Most envs start ``viser.ViserServer()`` on its default 8080/8081. The Piper
+    real env instead binds ``CAPX_VISER_PORT`` (set by the interactive launcher)
+    so it does not collide with a stale 8080 viser left by a prior session or a
+    calibration script. An explicit CAPX_VISER_PORT therefore takes priority —
+    even over the cache — so the proxy always targets THIS session's viser.
+    """
     global _viser_port_cache
-    # Try cached port first
-    if _viser_port_cache is not None:
+    candidates: list[int] = []
+    pinned = os.environ.get("CAPX_VISER_PORT")
+    if pinned:
         try:
-            urlopen(f"http://localhost:{_viser_port_cache}/", timeout=1)
-            return _viser_port_cache
-        except Exception:
-            _viser_port_cache = None
-    for port in _VISER_PORTS:
+            candidates.append(int(pinned))
+        except ValueError:
+            pass
+    if _viser_port_cache is not None and _viser_port_cache not in candidates:
+        candidates.append(_viser_port_cache)
+    candidates.extend(p for p in _VISER_PORTS if p not in candidates)
+    for port in candidates:
         try:
             urlopen(f"http://localhost:{port}/", timeout=1)
             _viser_port_cache = port
             return port
         except Exception:
             continue
+    _viser_port_cache = None
     return None
 
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import socket
 import struct
+import threading
 import time
 from typing import Any
 
@@ -83,6 +84,12 @@ class _ZedServiceClient:
         self.connect_timeout_sec = float(connect_timeout_sec)
         self.heartbeat_sec = float(heartbeat_sec)
         self._sock: socket.socket | None = None
+        # Serializes all framed I/O on self._sock. Without it, two threads sharing one
+        # client (e.g. a viser preview loop + a calibration detection loop both calling
+        # read_frames()) interleave their send/recv on the single socket, so a 4-byte
+        # length read lands on payload bytes → a garbage huge length → "frame too large"
+        # then "Bad file descriptor". The lock makes each request/reply atomic.
+        self._io_lock = threading.Lock()
         self._intrinsics: np.ndarray | None = None
         self.width = 0
         self.height = 0
@@ -153,9 +160,16 @@ class _ZedServiceClient:
         """
         while True:
             try:
-                return self._get_frame_once()
+                # Hold the lock across the I/O *and* the close-on-error so self._sock is
+                # never read by one thread while another is tearing it down. The heartbeat
+                # sleep stays outside the lock so a retry never blocks other readers.
+                with self._io_lock:
+                    try:
+                        return self._get_frame_once()
+                    except _TRANSPORT_ERRORS:
+                        self._close_sock()
+                        raise
             except _TRANSPORT_ERRORS as e:
-                self._close_sock()
                 self._warn(f"{type(e).__name__}: {e}")
                 time.sleep(self.heartbeat_sec)
 
@@ -182,6 +196,53 @@ class _ZedServiceClient:
 
     def stop(self) -> None:
         self._close_sock()
+
+    # ── Runtime camera settings (best-effort, one-shot connection) ──────────────
+    def _set_camera(self, **fields: Any) -> bool:
+        """Apply exposure/gain at runtime via the ``set_camera`` wire method.
+
+        Uses a **fresh** short-lived socket rather than ``self._sock`` so it never
+        interleaves framed messages with a concurrent ``read_frames()`` on the frame
+        socket. Best-effort: a transport error or service rejection is warned about
+        and returns False instead of raising (a settings hiccup must not kill the
+        caller's UI loop). The service serializes the actual change against grabs via
+        its own camera lock.
+        """
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.connect_timeout_sec)
+        try:
+            sock.connect(self.socket_path)
+            _send_frame(sock, {"v": 1, "method": "set_camera", **fields})
+            reply = json.loads(_recv_frame(sock).decode("utf-8"))
+            if not reply.get("ok", False):
+                print(
+                    f"[piper_real] ⚠ ZED set_camera rejected: {reply.get('error')} "
+                    f"(socket {self.socket_path}).",
+                    flush=True,
+                )
+                return False
+            return True
+        except _TRANSPORT_ERRORS as e:
+            print(
+                f"[piper_real] ⚠ ZED set_camera failed ({type(e).__name__}: {e}); "
+                f"socket {self.socket_path}.",
+                flush=True,
+            )
+            return False
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def set_auto_exposure_gain(self) -> None:
+        self._set_camera(auto=True)
+
+    def set_exposure(self, value: int) -> None:
+        self._set_camera(auto=False, exposure=int(value))
+
+    def set_gain(self, value: int) -> None:
+        self._set_camera(auto=False, gain=int(value))
 
     def intrinsics_matrix(self) -> np.ndarray:
         if self._intrinsics is None:

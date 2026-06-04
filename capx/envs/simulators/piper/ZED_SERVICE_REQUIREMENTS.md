@@ -23,6 +23,8 @@
 ```json
 {"v": 1, "method": "get_frame"}
 {"v": 1, "method": "ping"}
+{"v": 1, "method": "set_camera", "auto": true}
+{"v": 1, "method": "set_camera", "auto": false, "exposure": 50, "gain": 50}
 ```
 
 **`get_frame` 响应** payload：
@@ -41,6 +43,14 @@ header：
 }
 ```
 其后紧跟 `rgb.nbytes` 字节（行优先 RGB）、再 `depth.nbytes` 字节（行优先 float32）。
+
+**`set_camera` 响应** = 仅 JSON（无尾随像素）。运行时调曝光/增益：`auto:true` 恢复 ZED 自动
+AEC/AGC；否则按给定的 `exposure`/`gain`（0..100）设固定值（设值即关掉 auto）。服务用与 `get_frame`
+同一把相机锁串行化，不会与抓帧竞争。
+```json
+{"v":1,"ok":true}
+{"v":1,"ok":false,"error":"camera not open"}
+```
 
 **`ping` / 错误响应** = 仅 JSON（无尾随像素）：
 ```json
