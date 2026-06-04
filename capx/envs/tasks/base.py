@@ -208,31 +208,18 @@ class CodeExecutionEnvBase(Env):
         return self.low_level_env.compute_reward()
 
     def close(self) -> None:
-        """Release resources held by the low-level env — most importantly its
-        viser server.
+        """Do NOT tear down the low-level viser here — leave it with its env.
 
-        Each simulator starts its own ``viser.ViserServer()`` on construction.
-        The web UI builds a fresh env on every task switch / new trial and
-        tears the old one down. If the old server isn't stopped it keeps
-        holding its port (default 8080); viser then bumps the next env's
-        server to 8081+ (see its OSError retry loop) while the proxy's cached
-        port stays glued to the stale server — so the new task renders to a
-        viewer nobody is watching. Stopping it here frees the port so the next
-        env rebinds the same one. See capx/web/session_manager.py cleanup path.
+        ``capx.envs.base.get_env`` is ``@lru_cache``d, so the low-level hardware/sim
+        env (and the ``viser.ViserServer`` it starts in ``__init__``) is a process
+        SINGLETON reused across trials and high-level wrappers. The web UI calls
+        ``env.close()`` on session cleanup between trials; stopping the viser there
+        would kill it for every subsequent reuse — ``__init__`` / ``_init_viser``
+        never re-runs on a cache hit, so no new server replaces it and the proxy
+        ends up on a dead port (3D view black on "new trial"). So the viser lives
+        with its cached singleton for the process lifetime; here we only delegate
+        to ``super().close()``.
         """
-        low = getattr(self, "low_level_env", None)
-        server = getattr(low, "viser_server", None) if low is not None else None
-        if server is not None:
-            try:
-                server.stop()
-            except Exception:
-                pass
-            low.viser_server = None
-            # Drop the playback helper too — it pins the now-stopped server,
-            # and any later record()/clear() on it would touch a closed event
-            # loop. Nulling it lets a reused env rebuild against a fresh server.
-            if getattr(low, "frame_history", None) is not None:
-                low.frame_history = None
         super().close()
 
     # ---- Private methods ----
