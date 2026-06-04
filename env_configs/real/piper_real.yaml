@@ -26,6 +26,7 @@ env:
   cfg:
     _target_: capx.envs.tasks.base.CodeExecEnvConfig
     low_level: piper_real_low_level
+    use_long_term_library: true
     privileged: false
     apis:
       - PiperRealControlApi
