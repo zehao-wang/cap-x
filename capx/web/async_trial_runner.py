@@ -859,11 +859,22 @@ async def run_trial_async(
                         session.execution_thread_id = None
 
                 exec_timeout = getattr(session, 'execution_timeout', 180)
+                step_coro = run_in_env_thread(_step_render_with_interrupt, code)
+                # Human-supervised runs (interactive / real robot) skip the hard
+                # per-block timeout: compositional tasks legitimately run for many
+                # minutes, and asyncio.wait_for can't actually stop the env thread
+                # anyway (run_in_executor isn't cancellable) — so it only fires a
+                # spurious "timed out" while the robot keeps moving. The Stop button
+                # (which raises into the exec thread) is the real interrupt here.
+                skip_timeout = session.await_user_input_each_turn or is_real_robot
                 try:
-                    (obs_next, reward, terminated, truncated, info_step), post_step_frame = await asyncio.wait_for(
-                        run_in_env_thread(_step_render_with_interrupt, code),
-                        timeout=exec_timeout,
-                    )
+                    if skip_timeout:
+                        step_result, post_step_frame = await step_coro
+                    else:
+                        step_result, post_step_frame = await asyncio.wait_for(
+                            step_coro, timeout=exec_timeout
+                        )
+                    (obs_next, reward, terminated, truncated, info_step) = step_result
                 except asyncio.TimeoutError:
                     logger.warning(f"Code block {code_block_idx} timed out after {exec_timeout}s")
                     timeout_msg = (
