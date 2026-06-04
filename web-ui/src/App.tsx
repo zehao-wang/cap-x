@@ -189,8 +189,8 @@ function App() {
         <div className="flex items-center h-16 px-6 gap-4">
           {/* Logo */}
           <div className="flex items-center gap-2.5 flex-shrink-0">
-            <img src="/capx_logo.svg" alt="CaP-X" className="w-7 h-7" />
-            <h1 className="text-base font-bold font-display text-text-primary tracking-widest uppercase">CaP-X</h1>
+            <img src="/capx_logo.svg" alt="CaP-X-SE(TME)" className="w-7 h-7" />
+            <h1 className="text-base font-bold font-display text-text-primary tracking-widest uppercase">CaP-X-SE(TME)</h1>
           </div>
 
           {/* Divider */}
