@@ -58,6 +58,13 @@ class CodeExecEnvConfig:
     # pauses (AWAITING_USER_INPUT) for a typed task before the first generation,
     # instead of auto-starting. Used by real-robot configs (e.g. Piper).
     prompt_for_task: bool = False
+    # Expose the self-evolve long-term library (capx/skill_library +
+    # capx/atomic_task_library) to the agent: its functions are documented in the
+    # prompt AND injected into the code-execution namespace. On by default; when
+    # nothing is promoted yet (empty/absent dirs) it is silently skipped, and any
+    # loader failure degrades to a no-op (never breaks a trial). See
+    # docs-se/integration.md + storage.md.
+    use_long_term_library: bool = True
     # Optional runtime knobs forwarded to low-level env / APIs.
     # These are primarily used by real-robot setups (e.g., Piper).
     piper_planner_timesteps: int | None = None
@@ -241,7 +248,22 @@ class CodeExecutionEnvBase(Env):
             # NOTE: we need to discuss this further down the line
             # docs.append(f"- {name}:\n{text.strip()}")
             docs.append(f"\n{text.strip()}")
-        return f"{self._task_prompt}\nAPIs:\n" + "\n".join(docs)
+        prompt = f"{self._task_prompt}\nAPIs:\n" + "\n".join(docs)
+        if getattr(self.cfg, "use_long_term_library", True):
+            # Never let a missing / half-built long-term library break prompt
+            # assembly: empty -> skipped, any error -> no-op.
+            try:
+                from capx.self_evolve.long_term_library import long_term_docs
+                lt = long_term_docs()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[long_term_library] docs skipped: {exc}")
+                lt = ""
+            if lt.strip():
+                prompt += (
+                    "\n\nLong-term library (promoted, validated — PREFER these over "
+                    "re-implementing from primitives):\n" + lt
+                )
+        return prompt
 
     def _exec_user_code(self, code: str) -> dict[str, Any]:
         obs = self._get_observation()
@@ -295,6 +317,15 @@ class CodeExecutionEnvBase(Env):
         for api in self._apis.values():
             for fn_name, fn in api.functions().items():
                 g[fn_name] = fn
+        # Inject the promoted long-term library so its functions (e.g. pick) are
+        # callable alongside — and resolve — the primitives just bound above.
+        # Empty/absent library -> no-op; any failure must not break the env.
+        if getattr(self.cfg, "use_long_term_library", True):
+            try:
+                from capx.self_evolve.long_term_library import inject_long_term
+                inject_long_term(g)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[long_term_library] injection skipped: {exc}")
         self._exec_globals = g
 
     def _build_low_level(
