@@ -28,6 +28,10 @@
 # the ZED camera service (scripts_realbot/zed_service/run_zed_service.sh).
 # Set CAPX_SKIP_CHECKLIST=1 to skip the pause.
 #
+# Standalone service launchers (this script auto-starts OpenRouter via the first):
+#   scripts_realbot/openrouter_service/run_openrouter_service.sh   # LLM/VDM proxy :8110
+#   scripts_realbot/zed_service/run_zed_service.sh                 # ZED depth (service mode)
+#
 # Run:
 #   bash scripts_realbot/run_agent0_piper_interactive.sh [config_yaml]
 # Then open http://localhost:8200 in your browser (Viser 3D is reverse-proxied
@@ -51,6 +55,12 @@ OPENROUTER_PORT="${OPENROUTER_PORT:-8110}"
 OPENROUTER_URL="http://localhost:${OPENROUTER_PORT}/chat/completions"
 SAM3_PORT="${SAM3_PORT:-8114}"
 GRASPNET_PORT="${GRASPNET_PORT:-8115}"
+# Viser 3D scene port for the Piper env. Pinned to a distinctive port (NOT viser's
+# common default 8080, NOT the calibration scripts' 8201) so the web-UI proxy
+# targets THIS session's viser and never latches onto a stale one. The env binds
+# this and capx/web/server.py::_find_viser_port honours it.
+CAPX_VISER_PORT="${CAPX_VISER_PORT:-8211}"
+export CAPX_VISER_PORT
 
 # ---------------------------------------------------------------------------
 # Prechecks — fail early with an actionable message instead of a stack trace.
@@ -108,7 +118,13 @@ ZED_SOURCE="$(read_cfg piper_zed_source)"; ZED_SOURCE="${ZED_SOURCE:-bridge}"
 ZED_SOCK="$(read_cfg piper_zed_service_socket)"; ZED_SOCK="${ZED_SOCK:-/tmp/piper/zed.sock}"
 LOW_LEVEL="$(read_cfg low_level)"
 STATE_URL="$(read_cfg piper_state_service_url)"
-CAN_CH="${PIPER_CAN_CHANNEL:-${PIPER_CAN_INTERFACE:-can0}}"
+# The arm lives on can0 (can1 is the other adapter). EXPORT it so the preflight
+# check below AND the env subprocess use the same channel (the env reads
+# PIPER_CAN_CHANNEL; without the export it falls back to its own code default).
+# PIPER_CAN_INTERFACE is the backend type (socketcan/gs_usb), NOT a channel name,
+# so it's not a fallback here.
+export PIPER_CAN_CHANNEL="${PIPER_CAN_CHANNEL:-can0}"
+CAN_CH="$PIPER_CAN_CHANNEL"
 
 mark() { case "$1" in ok) echo "  [✓]";; no) echo "  [✗]";; *) echo "  [?]";; esac; }
 
@@ -148,7 +164,8 @@ else
 fi
 
 # 3) OpenRouter proxy — this script auto-starts it below; just needs the key.
-OR_LINE="$(mark ok) OpenRouter proxy auto-started by this script on :$OPENROUTER_PORT (.openrouterkey present)"
+#    Manual / standalone start: scripts_realbot/openrouter_service/run_openrouter_service.sh
+OR_LINE="$(mark ok) OpenRouter proxy auto-started by this script on :$OPENROUTER_PORT (.openrouterkey present) — manual: scripts_realbot/openrouter_service/run_openrouter_service.sh --port $OPENROUTER_PORT"
 
 cat <<EOF
 
@@ -186,7 +203,9 @@ echo "Session log dir: $SESSION_DIR"
 
 # ---------------------------------------------------------------------------
 # OpenRouter proxy (:8110). launch.py routes LLM calls here but does NOT start
-# it — bring it up if it isn't already serving.
+# it — bring it up if it isn't already serving. Delegates to the standalone
+# launcher (scripts_realbot/openrouter_service/run_openrouter_service.sh) so
+# there's one source of truth for how this service starts.
 # ---------------------------------------------------------------------------
 start_if_down() {
     local port="$1"; local name="$2"; shift 2
@@ -200,7 +219,7 @@ start_if_down() {
 
 echo "=== OpenRouter proxy ==="
 start_if_down "$OPENROUTER_PORT" openrouter \
-    "$PY" capx/serving/openrouter_server.py --key-file .openrouterkey --port "$OPENROUTER_PORT"
+    bash scripts_realbot/openrouter_service/run_openrouter_service.sh --key-file .openrouterkey --port "$OPENROUTER_PORT"
 
 # ---------------------------------------------------------------------------
 # Helper servers. In web-UI mode launch.py does NOT start the config's
@@ -215,7 +234,7 @@ start_if_down "$GRASPNET_PORT" graspnet \
 
 # These GPU servers take a while to load; they keep loading in the background
 # and just need to be UP before you start a trial in the browser.
-HELPER_WAIT_SECS="${HELPER_WAIT_SECS:-30}"
+HELPER_WAIT_SECS="${HELPER_WAIT_SECS:-60}"
 echo "Waiting ${HELPER_WAIT_SECS}s for helper servers (they load in the background)..."
 sleep "$HELPER_WAIT_SECS"
 for p in "$OPENROUTER_PORT" "$SAM3_PORT" "$GRASPNET_PORT"; do
@@ -233,6 +252,7 @@ cat <<EOF
   Launching CaP-X interactive web UI  (REAL Agilex PIPER)
     config:  $CONFIG
     model:   $PIPER_LLM_MODEL  via  $OPENROUTER_URL  (OpenRouter — NOT Qwen)
+    viser:   :$CAPX_VISER_PORT  (proxied through the web UI; not opened directly)
     logs:    $SESSION_DIR
 
   Open in your browser:  http://localhost:$WEB_UI_PORT

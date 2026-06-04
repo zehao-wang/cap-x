@@ -48,7 +48,7 @@ class PiperRealLowLevel(
     """Real Agilex PIPER over CAN with ZED scene + optional wrist RealSense."""
 
     CAN_INTERFACE = os.environ.get("PIPER_CAN_INTERFACE", "socketcan")
-    CAN_CHANNEL = os.environ.get("PIPER_CAN_CHANNEL", "can1")
+    CAN_CHANNEL = os.environ.get("PIPER_CAN_CHANNEL", "can0")
     CAN_BITRATE = int(os.environ.get("PIPER_CAN_BITRATE", "1000000"))
     MOTION_SPEED = int(os.environ.get("PIPER_MOTION_SPEED", "30"))
     CAMERA_EXTRINSICS_FILE = os.environ.get("PIPER_CAMERA_EXTRINSICS", "") or None
@@ -142,13 +142,18 @@ class PiperRealLowLevel(
         self.goto_home_blocking()
 
     def _update_from_hardware(self) -> None:
-        joints_rad = self._read_arm_joints()
-        gripper_m = self._read_gripper_width()
-        self.obs["robot_joint_pos"] = np.concatenate(
-            [joints_rad, [gripper_m]]
-        ).astype(np.float32)
-        self._update_zed_observation()
-        self._update_wrist_observation(joints_rad)
+        # All reads here touch non-thread-safe resources (the ZED service socket,
+        # the RealSense pipeline, the CAN bus). _hw_lock serializes this method
+        # across the motion loop, the agent's get_observation, and the
+        # live-preview daemon so two threads never read one socket at once.
+        with self._hw_lock:
+            joints_rad = self._read_arm_joints()
+            gripper_m = self._read_gripper_width()
+            self.obs["robot_joint_pos"] = np.concatenate(
+                [joints_rad, [gripper_m]]
+            ).astype(np.float32)
+            self._update_zed_observation()
+            self._update_wrist_observation(joints_rad)
 
     def _read_arm_joints(self) -> np.ndarray:
         js = self._piper.GetArmJointMsgs().joint_state
