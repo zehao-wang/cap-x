@@ -243,6 +243,17 @@ class TraceLogger:
                 "text": text,
             })
 
+    def save_attempt_code(self, code: str, filename: str = "code.py") -> None:
+        """Write the current attempt's executed code into its ``attempt_NN/`` folder.
+
+        Called when an attempt rolls over (``new_attempt``) and at trial end, so
+        every attempt's code sits next to its own trace / observations — not only
+        the final one in the trial's top-level ``code.py``."""
+        if not code or not code.strip():
+            return
+        with self._lock:
+            (self.dir / filename).write_text(code, encoding="utf-8")
+
     def finalize(self) -> None:
         """Render the current attempt's ``events`` into a readable ``trace.md``."""
         with self._lock:
@@ -401,6 +412,9 @@ class NullTraceLogger:
         pass
 
     def new_attempt(self) -> None:  # noqa: D102
+        pass
+
+    def save_attempt_code(self, *args: Any, **kwargs: Any) -> None:  # noqa: D102
         pass
 
     def finalize(self) -> None:  # noqa: D102

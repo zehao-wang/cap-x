@@ -386,18 +386,27 @@ def _save_trial_artifacts(
     visual_feedback_imgs: list[Image.Image],
     ensemble_data: dict[str, str] | None = None,
     multiturn_ensemble_data: list[dict[str, str]] | None = None,
+    trial_dir: "str | Path | None" = None,
 ) -> str | None:
     """Save trial artifacts (code, logs, images) to the output directory.
+
+    ``trial_dir`` overrides where the dump lands. The web/interactive flow passes
+    the unified ``trial_NN/`` directory so a trial's code/logs sit with its trace
+    and handoff in one folder. Headless callers omit it and keep the legacy
+    metric-named ``trial_NN_sandboxrc_..._reward_..._taskcompleted_..`` folder.
 
     Returns:
         Path to the saved code file, or None if output_dir is not set.
     """
     if not config["output_dir"]:
         return None
-    trial_dir = (
-        Path(config["output_dir"])
-        / f"trial_{trial:02d}_sandboxrc_{sandbox_rc}_reward_{reward:.3f}_taskcompleted_{int(task_completed)}"
-    )
+    if trial_dir is not None:
+        trial_dir = Path(trial_dir)
+    else:
+        trial_dir = (
+            Path(config["output_dir"])
+            / f"trial_{trial:02d}_sandboxrc_{sandbox_rc}_reward_{reward:.3f}_taskcompleted_{int(task_completed)}"
+        )
     trial_dir.mkdir(parents=True, exist_ok=True)
 
     code_path_obj = trial_dir / "code.py"

@@ -262,9 +262,26 @@ class PiperSetupMixin:
             import yourdfpy  # type: ignore
             from viser.extras import ViserUrdf  # type: ignore
 
-            self.viser_server = viser.ViserServer(
-                port=int(os.environ.get("CAPX_VISER_PORT", "8201"))
-            )
+            port = int(os.environ.get("CAPX_VISER_PORT", "8201"))
+            # A just-torn-down previous env (new trial) may still be releasing this
+            # port. Wait for it so the new viser binds the SAME port instead of
+            # auto-incrementing to one the web proxy — pinned to CAPX_VISER_PORT —
+            # never reaches, which blacks out the 3D view on "new trial".
+            import socket as _socket
+            import time as _time
+            _deadline = _time.time() + 10.0
+            while _time.time() < _deadline:
+                _probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+                try:
+                    _probe.bind(("0.0.0.0", port))
+                    _probe.close()
+                    break  # port is free -> viser will bind it exactly
+                except OSError:
+                    _probe.close()
+                    _time.sleep(0.2)
+            else:
+                print(f"[piper_real] viser port {port} still busy after 10s; it may auto-increment")
+            self.viser_server = viser.ViserServer(port=port)
             urdf = yourdfpy.URDF.load(
                 DEFAULT_PIPER_URDF,
                 filename_handler=_resolve_piper_mesh,

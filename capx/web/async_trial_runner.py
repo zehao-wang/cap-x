@@ -95,6 +95,40 @@ def _append_task_to_prompt(full_prompt: list, task_text: str) -> None:
         msg["content"] = addition.strip()
 
 
+def _annotate_code(code_blocks: list, code_block_metadata: list) -> str:
+    """Join code blocks into one annotated program (the form saved as code.py).
+
+    Shared by the trial's top-level code.py and the per-attempt
+    trial_NN/attempt_NN/code.py so they have identical formatting.
+    """
+    parts = []
+    for i, (block, meta) in enumerate(zip(code_blocks, code_block_metadata, strict=False)):
+        header = f"# Code block {i}"
+        if isinstance(meta, dict) and meta.get("regenerated"):
+            header += f" (regenerated at step {meta.get('regenerated_at_idx', '?')})"
+        parts.append(f"{header}\n{block}")
+    return "\n\n".join(parts)
+
+
+def _next_trial_number(output_dir: str | None) -> int:
+    """Next free ``trial_NN`` index in ``output_dir`` (1 if none / no dir).
+
+    Interactive runs one trial per ``run_trial_async`` call but reuses the same
+    per-session ``output_dir``; numbering by the next free index keeps each new
+    trial's trace / handoff / artifacts in its own ``trial_NN`` instead of
+    overwriting ``trial_01``.
+    """
+    if not output_dir or not os.path.isdir(output_dir):
+        return 1
+    import re
+    nums = [
+        int(m.group(1))
+        for name in os.listdir(output_dir)
+        if (m := re.match(r"trial_(\d+)", name))
+    ]
+    return (max(nums) + 1) if nums else 1
+
+
 async def run_trial_async(
     session: Session,
     args: LaunchArgsCompat,
@@ -110,7 +144,12 @@ async def run_trial_async(
         TrialSummary on completion, None if cancelled.
     """
     trial_start_time = time.time()
-    trial = 1  # Interactive mode runs one trial at a time
+    # Number this trial as the next free trial_NN in the (per-session, reused)
+    # output_dir so "new trial" doesn't overwrite the previous trial's trace /
+    # handoff / artifacts (they all key off this number).
+    trial = _next_trial_number(
+        session.config.get("output_dir") if getattr(session, "config", None) else None
+    )
 
     # Per-trial agent<->LLM / tool trace. Reassigned to a real TraceLogger once
     # the output dir is known; the no-op default keeps the finally block safe if
@@ -719,6 +758,9 @@ async def run_trial_async(
                     # own. Guarded like the viser empty-segment check: a retry
                     # that produced no code does not advance the attempt index.
                     if attempt_has_run:
+                        # Persist the just-finished attempt's code into its own
+                        # attempt_NN/ before the trace rolls over to the next one.
+                        trace.save_attempt_code(_annotate_code(code_blocks, code_block_metadata))
                         trace.new_attempt()
                         attempt_has_run = False
 
@@ -1097,15 +1139,11 @@ async def run_trial_async(
         # ========================================================================
         logger.info("Trial execution complete")
 
-        # Build final code with annotations
-        annotated_blocks = []
-        for i, (block, metadata) in enumerate(zip(code_blocks, code_block_metadata, strict=False)):
-            header = f"# Code block {i}"
-            if metadata.get("regenerated"):
-                header += f" (regenerated at step {metadata.get('regenerated_at_idx', '?')})"
-            annotated_blocks.append(f"{header}\n{block}")
-
-        final_code = "\n\n".join(annotated_blocks)
+        # Build final code with annotations; also drop it into the last attempt's
+        # folder so every attempt — including the final/winning one — has its own
+        # attempt_NN/code.py (this one equals the trial's top-level code.py).
+        final_code = _annotate_code(code_blocks, code_block_metadata)
+        trace.save_attempt_code(final_code)
 
         # Handle sandbox_rc override for max steps
         if "executing action in terminated episode" in info_step.get("stderr", ""):
@@ -1134,7 +1172,11 @@ async def run_trial_async(
         code_path = None
         output_dir = session.config.get("output_dir")
         if output_dir:
-            logger.info(f"Saving trial artifacts to: {output_dir}")
+            # Unified per-trial folder: code/logs land in trial_NN/ next to the
+            # LLM trace + handoff (instead of a separate metric-named sibling), so
+            # everything for one trial lives in one place.
+            trial_dir = os.path.join(output_dir, f"trial_{trial:02d}")
+            logger.info(f"Saving trial artifacts to: {trial_dir}")
             code_path = await asyncio.to_thread(
                 _save_trial_artifacts,
                 session.config,
@@ -1147,6 +1189,7 @@ async def run_trial_async(
                 all_responses,
                 log_lines,
                 visual_feedback_imgs,
+                trial_dir=trial_dir,
             )
             logger.info(f"Trial artifacts saved to: {code_path}")
 
