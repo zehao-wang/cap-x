@@ -51,6 +51,7 @@ capx/atomic_task_library/*.py    # 每个文件 = atomic task 的函数 + 其 co
   "success": { "signal": "human_finished", "attempt": 1 },  // 人确认成功落在哪个 attempt
   "final_code": "<人确认成功的代码，未通用化——postprocessor 由它出发做 rewrite>",
   "human_feedback": [ { "index": 17, "attempt": 0, "text": "<verbatim 人 feedback>" } ],
+  "api_reference": "<agent 看到的完整 API/工具 prompt；③ 重推 (B) 时需要感知 API>",
   "chat_history": [ /* 跨 attempt 线性重建的完整对话，见下 */ ],
   "datetime": "YYYY-MM-DD HH:MM:SS"
 }

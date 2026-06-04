@@ -89,43 +89,88 @@ def build_generalize_rewrite_prompt(
     *,
     round_index: int,
     last_was_rejected: bool,
+    human_feedback: list[str] | None = None,
+    api_reference: str | None = None,
 ) -> list[dict]:
-    """Prompt asking the model to rewrite the code into a *more general* form.
+    """Prompt asking the model to refine the code so it de-depends on one-off info.
 
-    The success was likely reached using one-off info from human feedback. This
-    asks the model to remove that direct dependence — hoist magic numbers into
-    named hyper-params, replace object-specific assumptions with measured /
-    parameterized ones — WITHOUT changing what the code accomplishes. The rewrite
-    is then re-executed in the env and judged by the human.
+    The success was reached partly via one-off human guidance. **Not all of that
+    guidance is bad** — some is a genuinely general fix (a small grasp-depth
+    z-margin; a modest pre-grasp retreat along the −approach axis) that should be
+    KEPT as a named hyper-param; some is scene-specific over-fitting (hand-tuned
+    waypoints dodging *these* obstacles) that should be RE-DERIVED from perception
+    under the constraint it encodes. The model is told to classify each specific
+    into (A) keep-as-hyper-param vs (B) re-derive, and may add helper functions /
+    new mechanisms for (B). The rewrite is re-executed in the env and judged by a
+    human each round.
+
+    ``human_feedback`` (the verbatim guidance, source of the specifics) and
+    ``api_reference`` (the full available API surface, needed to re-derive (B) from
+    perception) are passed when available; both degrade gracefully if omitted.
     """
     system = (
-        "You generalize a robot-control program that already succeeded. The "
-        "success may have relied on one-off information a human gave during this "
-        "session. Rewrite the code so it no longer depends on that one-off info: "
-        "hoist hard-coded magic numbers into clearly-named hyper-parameters at the "
-        "top, replace object/task-specific assumptions with measured or "
-        "parameterized values, and keep the externally-observable behavior "
-        "identical. Do NOT add new capabilities. Output ONLY the rewritten Python "
-        "code, no fences, no explanation."
+        "You refine a robot-control program that already succeeded partly thanks to "
+        "one-off human guidance. Keep it working while removing dependence on the "
+        "scene-specific parts. Classify each human-given value/step:\n"
+        "  (A) GENERAL hyper-parameter — a small, physically-motivated magnitude valid "
+        "across scenes (e.g. ~2cm grasp-depth margin; a small pre-grasp retreat along the "
+        "−approach axis). KEEP it as a clearly-named constant at the top.\n"
+        "  (B) SCENE-SPECIFIC — values that only fit THIS scene (hand-tuned waypoints / "
+        "trajectory). Don't hardcode them: infer the constraint they encode (clearance "
+        "from object/obstacles; bound the approach so the planner can't cut a colliding "
+        "path) and re-derive it at runtime from perception (object/obstacle geometry, "
+        "scene depth / point cloud); you may add helpers.\n"
+        "Preserve success (re-executed and human-judged each round). Use only the provided "
+        "APIs. Output ONLY the rewritten Python code — no fences, no prose."
     )
     note = (
-        "The previous rewrite was judged INCORRECT when run (it changed behavior "
-        "or broke the task). Be more conservative: generalize less aggressively "
-        "and preserve exactly what worked.\n\n"
+        "The previous refine was judged INCORRECT when run (it broke the task). Be "
+        "more conservative: re-derive less aggressively, keep more of what worked, and "
+        "fall back to a named hyper-param where re-derivation is uncertain.\n\n"
         if last_was_rejected
+        else ""
+    )
+    fb = (
+        "Human guidance given this session (the source of the one-off specifics — "
+        "classify each into (A) or (B)):\n"
+        + "\n".join(f"- {t.strip()}" for t in human_feedback if t.strip())
+        + "\n\n"
+        if human_feedback
+        else ""
+    )
+    api = (
+        f"Available APIs (use ONLY these; re-derivation of (B) must go through them):\n"
+        f"{api_reference.strip()}\n\n"
+        if api_reference
         else ""
     )
     user = (
         f"Task:\n{task_description.strip()}\n\n"
-        f"{note}"
-        f"Current working code (rewrite round {round_index}):\n```python\n"
+        f"{api}{fb}{note}"
+        f"Current working code (refine round {round_index}):\n```python\n"
         f"{current_code.strip()}\n```\n\n"
-        "Return the generalized version of this code."
+        "Return the refined code: keep (A) as named hyper-params, re-derive (B) from perception."
     )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+
+
+def _human_feedback_from_chat(chat_history: list[dict] | None) -> list[str]:
+    """Pull the verbatim human-feedback turns out of a handoff ``chat_history``.
+
+    The live loop logs feedback as first-class ``role == "human_feedback"`` turns
+    (see ``docs-se/storage.md``), so the refine step can see the one-off guidance
+    it must de-depend on without re-parsing prompts.
+    """
+    out: list[str] = []
+    for m in chat_history or []:
+        if isinstance(m, dict) and str(m.get("role", "")).startswith("human_feedback"):
+            text = _message_text(m.get("content")).strip()
+            if text:
+                out.append(text)
+    return out
 
 
 def build_distill_prompt(
@@ -241,6 +286,8 @@ def generalize_by_rewrite(
     query_fn: QueryFn,
     judge_fn: JudgeFn,
     max_rounds: int = 3,
+    human_feedback: list[str] | None = None,
+    api_reference: str | None = None,
 ) -> tuple[str, int]:
     """Run the generalize-by-rewrite loop; return ``(final_code, accepted_rounds)``.
 
@@ -248,13 +295,18 @@ def generalize_by_rewrite(
     round proposes a more general version; if the human judges it correct it
     becomes the new baseline and we try to generalize further, else we stop and
     keep the last approved baseline. A round that returns no/empty code stops too.
+
+    ``human_feedback`` (the one-off guidance to classify) and ``api_reference`` (the
+    API surface needed to re-derive scene-specific parts from perception) are
+    forwarded to the prompt; both are optional.
     """
     baseline = original_code
     accepted = 0
     last_rejected = False
     for r in range(max_rounds):
         prompt = build_generalize_rewrite_prompt(
-            task_description, baseline, round_index=r, last_was_rejected=last_rejected
+            task_description, baseline, round_index=r, last_was_rejected=last_rejected,
+            human_feedback=human_feedback, api_reference=api_reference,
         )
         candidate = (query_fn(prompt) or "").strip()
         if not candidate or candidate == baseline.strip():
@@ -346,12 +398,16 @@ def run_feedback_postprocessor(
     store: MemStore,
     config: ExperienceDistillConfig | None = None,
     max_rewrite_rounds: int = 3,
+    api_reference: str | None = None,
     now: _dt.datetime | None = None,
 ) -> PostprocessResult:
     """End-to-end module ③: generalize -> distill -> write the history pair.
 
     ``task`` is the canonical short task name (used for the history id + digest
-    header); ``task_description`` is the full prompt shown to the model.
+    header); ``task_description`` is the full prompt shown to the model. The
+    one-off human guidance to de-depend on is read straight from ``chat_history``
+    (its ``human_feedback`` turns); ``api_reference`` (full API surface, optional)
+    lets the refine step re-derive scene-specific parts from perception.
     """
     config = config or ExperienceDistillConfig()
     now = now or _dt.datetime.now()
@@ -360,6 +416,7 @@ def run_feedback_postprocessor(
     final_code, rounds = generalize_by_rewrite(
         task_description, original_code,
         query_fn=query_fn, judge_fn=judge_fn, max_rounds=max_rewrite_rounds,
+        human_feedback=_human_feedback_from_chat(chat_history), api_reference=api_reference,
     )
 
     settings_line = _settings_line(settings)

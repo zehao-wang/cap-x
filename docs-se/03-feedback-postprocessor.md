@@ -30,12 +30,27 @@ Feedback Postprocessor 负责把代码改得更通用：
 
 - **流水线位置**：在「人判定成功」与「生成 final_code 写入 `history_pool`」**之间**。即进入
   短期记忆的已经是通用化后的版本。
-- **做法**：多轮 code rewrite，去除对这次一次性额外信息的直接依赖。
-  - 例：feedback 要求 eef 始终与 `z=0` 平面保持 `0.03` 距离。第一版可能直接在 main 里
-    `z += 0.03`；rewrite 的更通用形态是——把这个 margin 变成 grasp 相关的超参，成为 grasp
-    atomic task config 的一部分，通用于所有情况。
+- **做法**：多轮 code rewrite。**核心不是"把所有魔法数搬到顶部命名"**（那只是改名，代码仍 depend
+  在人给的具体值上），而是对人给的每条 specificity 先**分类**，再分别处理：
+  - **(A) 通用超参** —— 物理上有意义、跨场景/物体都成立的小量（如 ~2cm 的 grasp 抓取深度 z-margin
+    防抓太深；沿夹爪 −approach 轴的一小段 pre-grasp 回撤）。→ **保留**，但 hoist 成顶部命名超参
+    （= grasp atomic task 的 config 字段）。
+  - **(B) 场景专属产物** —— 只对**这一个场景几何**成立的值（手调的绝对/相对 waypoint、为绕开这几个
+    障碍专门凑的轨迹）。→ **不要钉死成固定数字**。先**推断它编码的约束**（与物体/桌面的 clearance；
+    用中间点 bound 住 approach 防 planner 切出撞路径），再用**感知 API 在运行时按约束重推**——读
+    物体/障碍几何（bbox extent、scene depth / point cloud）去**计算或采样**一条 bounded、留够 margin
+    的 approach。**允许新增 helper / 新机制**来做 (B)。
+  - 例：人给「z+2cm + 3 个具体中间 waypoint」。z+2cm 属 (A)→ 留成 `GRASP_Z_MARGIN` 超参；3 个具体
+    waypoint 属 (B)→ 改成基于 point cloud 在任务区域采一条满足 clearance 约束的轨迹。
+  - 实现要点：rewrite 需要**完整 API 面**（感知 API 才能做 (B) 的重推）+ **本轮 human feedback**
+    （(B) 的意图来源）——二者由 **postprocess handoff** 的 `api_reference` 与 `chat_history` 的
+    `human_feedback` 轮提供（见 [storage.md](storage.md)）。
+- **③↔④ 边界**：③ 就地把 (B) 写成完整原理化实现（哪怕引入新机制）；当这个机制**值得跨任务复用**时，
+  由 [04-update-planner.md](04-update-planner.md) 在多条 history 上**去重 / 抽成 candidate 函数**固化，
+  不在 ③ 这里强行抽库。
 - **验证方式**：rewrite **仍需与环境交互**实际执行；**每轮只由人判对错**（不再接收细节
-  feedback）。对 → 结束；错 → 继续重写。
+  feedback）。对 → 结束；错 → 继续重写（更深的 (B) 重推更易改坏，**env-in-the-loop 判对错是必须的**；
+  离线 `debug postprocessor --judge auto` 只能看改写**方向**，不算验证——见 [debugging.md](debugging.md)）。
 - **输出**：通用化后的 `final_code` 连同完整对话（含 human feedback）按 success log schema
   追加到 `history_pool`（schema 见 [storage.md](storage.md)）。
 

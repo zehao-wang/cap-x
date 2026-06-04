@@ -1163,11 +1163,21 @@ async def run_trial_async(
                         "use_visual_feedback": use_visual_feedback,
                         "use_img_differencing": use_img_differencing,
                     }
+                    # The full API/tool prompt (perception APIs etc.) the agent saw;
+                    # module ③ needs it to re-derive scene-specific parts from
+                    # perception during the generalize-rewrite step.
+                    api_reference = "\n\n".join(
+                        part["text"]
+                        for msg in clean_base_prompt
+                        for part in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+                        if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+                    ) or None
                     handoff_path = await asyncio.to_thread(
                         trace.write_handoff,
                         task=task_description,
                         settings=handoff_settings,
                         final_code=final_code,
+                        api_reference=api_reference,
                     )
                     logger.info(f"Postprocessor handoff written to: {handoff_path}")
                 except Exception as _handoff_exc:  # noqa: BLE001

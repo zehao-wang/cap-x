@@ -39,6 +39,7 @@ class Handoff:
     human_feedback: list[dict[str, Any]] = field(default_factory=list)
     success: dict[str, Any] = field(default_factory=dict)
     datetime: str = ""
+    api_reference: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -68,6 +69,7 @@ class Handoff:
             "settings": self.settings,
             "original_code": self.final_code,
             "chat_history": self.chat_history,
+            "api_reference": self.api_reference,
         }
 
 
@@ -109,6 +111,7 @@ def load_handoff(path: str | Path) -> Handoff:
     if not isinstance(settings, dict):
         raise ValueError(f"handoff {p}: 'settings' must be a dict")
 
+    api_reference = data.get("api_reference") or _recover_api_reference(p.parent)
     return Handoff(
         path=p,
         task=task,
@@ -118,8 +121,42 @@ def load_handoff(path: str | Path) -> Handoff:
         human_feedback=data.get("human_feedback") or [],
         success=data.get("success") or {},
         datetime=data.get("datetime", ""),
+        api_reference=api_reference,
         raw=data,
     )
+
+
+def _recover_api_reference(trial_dir: Path) -> str | None:
+    """Best-effort recovery of the full API/tool prompt from the trial's traces.
+
+    New handoffs carry ``api_reference`` directly. For handoffs written before that
+    field existed, fall back to the longest input-message text across the trial's
+    ``attempt_*/llm_trace.jsonl`` — that is the API-laden base prompt the agent saw.
+    Returns ``None`` if nothing is recoverable (the refine step then degrades).
+    """
+    best = ""
+    for trace in sorted(trial_dir.glob("attempt_*/llm_trace.jsonl")):
+        try:
+            lines = trace.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for msg in rec.get("input_messages", []) or []:
+                content = msg.get("content") if isinstance(msg, dict) else None
+                texts = [content] if isinstance(content, str) else [
+                    p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+                ] if isinstance(content, list) else []
+                for t in texts:
+                    if isinstance(t, str) and "APIs:" in t and len(t) > len(best):
+                        best = t
+    return best or None
 
 
 def find_handoffs(logs_root: str | Path) -> list[Path]:

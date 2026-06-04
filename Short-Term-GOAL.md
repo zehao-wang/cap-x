@@ -10,7 +10,12 @@
 ### ✅ 已完成（scripts 收口）
 - `scripts_realbot/openrouter_service/run_openrouter_service.sh` + `README.md`：openrouter 启动单一真相；
   launcher 调用它，checklist 末尾给出手动启动路径。
-- 交互 launcher CAN 默认 `can0`→`can1`（对齐其它 realbot 脚本），修 `PIPER_CAN_INTERFACE` 误当通道名的 bug。
+- 交互 launcher CAN 默认 **`can0`**（机械臂在 can0；can1 是另一块适配器）；修 `PIPER_CAN_INTERFACE`
+  误当通道名的 bug。（注：曾短暂改成 can1 对齐其它脚本，用户按真机实际改回 can0。）
+- **修真 bug：launcher 只算 `CAN_CH` 做 preflight，从不 export `PIPER_CAN_CHANNEL`** → env 子进程读不到，
+  回落 `piper_real.py` 代码默认 `can1` → 运行时 `ConnectionError ['can1']`。修：launcher `export
+  PIPER_CAN_CHANNEL="${...:-can0}"` 让 preflight 与 env 同源；`piper_real.py:51` 代码默认也改 `can0`。
+  待办：`piper_set_mode.py` / cam_calibration 几个标定脚本的 arm channel 默认仍是 can1（独立工具，未改，需要时再统一）。
 - helper 等待 30s→60s。
 
 ### 🔲 问题 1：viser Camera View 不刷新 ZED RGBD
@@ -123,3 +128,29 @@
 - 新增 `mem/func_candidate_pool/README.md`（占位 + 记录中期记忆角色；不被 `list_candidate_names` 误当候选，
   其按 `*.stats.json` 识别，已验证 list 仍为空）。
 - docs：`storage.md` 树注明三层 + git；`concepts.md §3` Memory 改为短/中/长三层。
+
+### ✅ 已完成（接续）：③ refine 升级为 (A)/(B) 判别 + 感知重推 + api_reference 接线
+- 用户定调：③ 直接写完整原理化实现（含新机制）；不是所有超参都该重推——(A) 通用超参（~2cm grasp
+  z-margin、沿 −approach 的 pre-grasp 回撤）保留成命名超参；(B) 场景专属（手调 waypoint/轨迹）按推断
+  的约束用感知 API 在运行时重推。④ 再去重/固化可复用机制。
+- `feedback_postprocessor.py`：重写 `build_generalize_rewrite_prompt`（教 (A)/(B) 判别、re-derive、
+  允许新机制、env-in-loop 判对）；新增 `_human_feedback_from_chat`（从 chat 的 human_feedback 轮取
+  verbatim 指导）；`generalize_by_rewrite`/`run_feedback_postprocessor` 透传 `human_feedback`+`api_reference`。
+- `handoff.py`：Handoff 加 `api_reference`，`load_handoff` 缺字段时从 trial 的 `attempt_*/llm_trace.jsonl`
+  回收（含 "APIs:" 的最长输入文本）→ 旧 handoff 也能用；`postprocessor_kwargs` 带上它。
+- `trace_logger.write_handoff` + runner：未来 run 直接落 `api_reference`（runner 从 `clean_base_prompt` 抽）。
+- `debug.py`：postprocessor 打印 api_reference 状态 + 当 `--judge auto` 且有 rewrite 时警告"离线不算验证"。
+- 验证：75 passed（含新增 3 个 (A)/(B) prompt 测试）；旧 handoff 回收 api_reference=8082 chars（含
+  get_scene_view/refresh_point_clouds/get_object_pose），feedback 抽到 2 条。
+- docs：`03` 做法节重写（(A)/(B) + ③↔④ 边界 + env-in-loop）；`storage.md` handoff schema 加 `api_reference`。
+- 待办：用真 LLM 跑一次升级后的 `debug postprocessor`，肉眼看 (B) 有没有真的改成基于 point cloud 的约束重推。
+
+### 接续：refine 深度定档 + prompt 收紧（用户验证后定调）
+- 真跑 `postprocessor_20260604-170049` 验证：(A)/(B) 判别确实启动（call#1 就带 (A)/(B) 注释），
+  (A) z-margin 留成命名超参 ✓；(B) waypoint 高度改成 `obj_height(get_object_pose bbox)+命名 clearance`
+  → **只到"目标物体自适应"**，没到"基于场景障碍/point cloud 的约束轨迹"；clearance 量仍是命名常量；
+  XY pullback 仍假设 +x；auto-judge 没验证；digest 漏报这些 fragility。
+- 决策（用户）：**当前深度先接受**——无场景 point cloud 时这种 refine 难测有效性，完整的 point-cloud
+  约束轨迹采样器**留给长期更新**（将来作为可复用 skill / ④ candidate）。不强推。
+- 用户反馈：prompt 加太多。已收紧 `build_generalize_rewrite_prompt` 的 system（~230→136 词），
+  保 (A)/(B) 意思去冗余；测试仍 10 passed。

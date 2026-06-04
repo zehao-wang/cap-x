@@ -349,6 +349,7 @@ class TraceLogger:
         settings: dict[str, Any],
         final_code: str,
         success_attempt: int | None = None,
+        api_reference: str | None = None,
         filename: str = "postprocess_handoff.json",
     ) -> Path:
         """Write the Feedback Postprocessor's input contract at the trial root.
@@ -376,6 +377,7 @@ class TraceLogger:
             "success": {"signal": "human_finished", "attempt": success_attempt},
             "final_code": final_code,
             "human_feedback": human_feedback,
+            "api_reference": api_reference,
             "chat_history": chat,
             "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }

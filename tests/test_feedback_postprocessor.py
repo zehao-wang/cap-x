@@ -9,7 +9,9 @@ from __future__ import annotations
 from capx.self_evolve import MemStore, run_feedback_postprocessor
 from capx.self_evolve.config import ExperienceDistillConfig
 from capx.self_evolve.feedback_postprocessor import (
+    _human_feedback_from_chat,
     build_distill_prompt,
+    build_generalize_rewrite_prompt,
     distill_experience,
     generalize_by_rewrite,
     parse_distill_response,
@@ -99,6 +101,47 @@ def test_generalize_reverts_on_rejection():
     )
     assert accepted == 0
     assert final == "def main():\n    works()\n"  # baseline kept
+
+
+# --------------------------------------------------------------------------- #
+# (A)/(B) discrimination prompt + feedback extraction
+# --------------------------------------------------------------------------- #
+def test_human_feedback_from_chat_pulls_only_feedback_turns():
+    chat = [
+        {"role": "task", "content": "pick the onion"},
+        {"role": "assistant", "content": "code..."},
+        {"role": "human_feedback", "content": "z 加 2cm margin"},
+        {"role": "tool", "content": "moved"},
+        {"role": "human_feedback", "content": "多加几个中间 waypoint"},
+        {"role": "human_finish", "content": ""},
+    ]
+    assert _human_feedback_from_chat(chat) == ["z 加 2cm margin", "多加几个中间 waypoint"]
+
+
+def test_generalize_prompt_carries_classification_feedback_and_api():
+    msgs = build_generalize_rewrite_prompt(
+        "pick the onion", "pos[2]+=0.02\nwp1=pos+[-0.05,0,0.30]",
+        round_index=0, last_was_rejected=False,
+        human_feedback=["z 加 2cm margin", "多加几个中间 waypoint 防撞"],
+        api_reference="get_object_pose(...)\nget_scene_view(...)\nrefresh_point_clouds()",
+    )
+    system, user = msgs[0]["content"], msgs[1]["content"]
+    # system must teach the (A) keep-as-hyper-param vs (B) re-derive distinction
+    assert "(A)" in system and "(B)" in system
+    assert "hyper-parameter" in system and "re-derive" in system.lower()
+    # the one-off guidance + API surface are both in the user prompt
+    assert "z 加 2cm margin" in user and "防撞" in user
+    assert "get_scene_view" in user and "refresh_point_clouds" in user
+
+
+def test_generalize_prompt_degrades_without_feedback_or_api():
+    msgs = build_generalize_rewrite_prompt(
+        "pick", "pos[2]+=0.02", round_index=1, last_was_rejected=True,
+    )
+    user = msgs[1]["content"]
+    assert "Available APIs" not in user  # api block omitted
+    assert "Human guidance given this session" not in user  # feedback block omitted
+    assert "more conservative" in user  # rejection note still present
 
 
 # --------------------------------------------------------------------------- #

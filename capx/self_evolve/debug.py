@@ -212,12 +212,18 @@ def cmd_postprocessor(args: argparse.Namespace) -> int:
     kwargs = ho.postprocessor_kwargs()
     rounds = 0 if args.skip_rewrite else args.rewrite_rounds
 
+    api_ref = kwargs.get("api_reference")
     _h("POSTPROCESSOR INPUTS (from handoff)")
     _kv("task", kwargs["task"])
     _kv("settings", kwargs["settings"])
     _kv("chat turns", len(kwargs["chat_history"]))
     _kv("feedback", ho.feedback_texts())
+    _kv("api_reference", f"{len(api_ref)} chars" if api_ref else "MISSING — (B) re-derivation will degrade")
     _kv("rewrite rounds", f"{rounds} ({'skipped' if rounds == 0 else 'judge=' + args.judge})")
+    if rounds > 0 and args.judge == "auto":
+        print("  ⚠ offline --judge auto rubber-stamps every rewrite (no env). It shows the "
+              "agent's\n    refine DIRECTION, not a validated result — real (B) re-derivation "
+              "needs env-in-the-loop.")
 
     sess = _session_dir("postprocessor")
     query_fn = make_logged_query_fn(
