@@ -4,18 +4,25 @@
 > `history_pool`、Update Planner 读它写 `func_candidate_pool`、Benchmark Evaluator 读它并
 > （经批准后）写长期 library。任何阶段都按这里的 schema 读写，互不依赖对方的实现。
 
-所有 pool 都与 memory 相关，统一放在仓库的 `mem/` 目录下。
+所有 pool 都与 memory 相关，统一放在仓库根 `mem/` 目录下。**按生命周期分层、是否进 git 不同**
+（git 规则见仓库 `.gitignore`）：
 
 ```
 mem/
-├── history_pool/                # 短期记忆：成功交互 log，openclaw 式追加，暂不删除
+├── history_pool/                # 【短期记忆 · 本地 gitignored】成功交互 log，openclaw 式追加，暂不删除
 │   ├── <task>__<YYYYMMDD-HHMMSS>.json       # 原始成功 log（全文，drill-down 用）
 │   └── <task>__<YYYYMMDD-HHMMSS>.digest.md  # distill 出的 sourced digest（消费者默认读这个）
-├── func_candidate_pool/         # 候选函数（由 LLM-2 写入）+ 累积统计
+├── func_candidate_pool/         # 【中期记忆 · 进 git 跟踪】候选函数（由 LLM-2 写入）+ 累积统计
 │   ├── <func_name>.py           #   候选函数源码
 │   └── <func_name>.stats.json   #   该函数的累积统计
-└── .processed_history           # Library Management 已处理的 history id 列表(增量游标)
+└── .processed_history           # 【本地 gitignored】Library Management 已处理的 history id 列表(增量游标)
 ```
+
+> **三层记忆 · 生命周期 / git**：
+> - **短期** `history_pool/`（+ `.processed_history`）—— 本地运行时态，**gitignored**，每个 checkout 各一份。
+> - **中期** `func_candidate_pool/` —— **进 git 跟踪**，候选 + stats 随仓库走，便于在**另一个集群上做大规模
+>   simulation evaluation**（[05-benchmark-evaluator.md](05-benchmark-evaluator.md) 在那边持续累加 `*.stats.json`）。
+> - **长期** `capx/skill_library/`、`capx/atomic_task_library/`（下文）—— 验证 + 人批准后固化的代码，走 PR。
 
 长期 library（固化目标，作为可 import 的代码模块，放在 `capx/` 包内；保持模块化但不过度
 模块化）：

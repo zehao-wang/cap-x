@@ -114,3 +114,12 @@
 - [ ] 真机跑通一次成功 → 用 `debug handoff` 验证真出 handoff（接上一节 live-gated 项）。
 - [ ] postprocessor/planner 用真 LLM（openrouter）跑一遍，肉眼核对 agent 产出。
 - [ ] ⑤Evaluator/⑥Heartbeat 的孤立驱动暂未进 debug CLI（更重，需 sim/cron）。
+
+### ✅ 已完成（接续）：三层记忆 · func_candidate_pool 进 git（中期记忆）
+- 决策（用户）：`func_candidate_pool` = 中期记忆，进 git，随仓库流到另一集群做大规模 sim evaluation；
+  `history_pool`(+`.processed_history`) 维持短期、本地 gitignored；长期库仍是 `capx/` 代码走 PR。
+- `.gitignore`：`mem` → `/mem/*` + `!/mem/func_candidate_pool/`（check-ignore 验证：history_pool/cursor
+  IGNORED、func_candidate_pool/* TRACKED）。
+- 新增 `mem/func_candidate_pool/README.md`（占位 + 记录中期记忆角色；不被 `list_candidate_names` 误当候选，
+  其按 `*.stats.json` 识别，已验证 list 仍为空）。
+- docs：`storage.md` 树注明三层 + git；`concepts.md §3` Memory 改为短/中/长三层。

@@ -52,5 +52,11 @@ logs/
 *.webp
 check.md
 
-mem
+# self-evolve memory pools (repo-root mem/), tiered by how long they live:
+#   history_pool/ + .processed_history = SHORT-term, local runtime state -> ignored;
+#   func_candidate_pool/              = MID-term memory -> TRACKED, so candidates
+#       travel via git to the large-scale eval cluster (Benchmark Evaluator
+#       accumulates stats.json there). Long-term library = capx/ code via PR.
+/mem/*
+!/mem/func_candidate_pool/
 logs

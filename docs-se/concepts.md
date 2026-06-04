@@ -9,13 +9,16 @@
 
 2. **system prompt**：每次 LLM 调用都固定出现的内容，规定必须考虑的事情和固定流程。
 
-3. **Memory**：分短期、长期。
+3. **Memory**：分短期、中期、长期（按生命周期 / 是否进 git 分层，见 [storage.md](storage.md)）。
    - **短期记忆 = `history_pool`**：人机交互中**成功**积累下来的经验（哪些能做 /
      不能做、code 层面哪些与人协作的更改让任务成功了）。**只有成功的 history 进入短期
-     记忆**，且**只被 Library Management 消费**。
+     记忆**，且**只被 Library Management 消费**。本地运行时态，**gitignored**。
+   - **中期记忆 = `func_candidate_pool`**：Update Planner 提出、尚待 benchmark 验证的候选函数
+     + 累积统计。**进 git 跟踪**，使候选随仓库流到**另一个集群做大规模 simulation evaluation**
+     （Benchmark Evaluator 在那边累加 stats）。
    - **长期记忆**：经过完整 benchmark evaluation 验证、确实对 task success 有贡献的
      coding 层产物（code / config / hyper-param），落在 `primitives`、`skill_library`、
-     `atomic_task_library` 中。
+     `atomic_task_library` 中（走 PR 固化）。
    - 存储布局与 schema 见 [storage.md](storage.md)。
 
 4. **Heartbeat**：定时唤起一些 daily task 或长期 plan 的 task，是推动模型演进的机制
