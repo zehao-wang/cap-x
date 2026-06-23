@@ -65,7 +65,8 @@ class _Ctx:
 class TrackJudge:
     def __init__(self, socket_path="/tmp/demo_bridge/sockets/tapip3d.sock", viz_dir=None,
                  window=12, resolution_factor=1.0, num_iters=6):
-        self.socket_path = socket_path
+        # Coalesce None -> default (callers may pass socket_path=None to mean "use default").
+        self.socket_path = socket_path or "/tmp/demo_bridge/sockets/tapip3d.sock"
         self.viz_dir = viz_dir
         self.window = int(window)
         self.resolution_factor = float(resolution_factor)

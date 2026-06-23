@@ -485,6 +485,17 @@ class CodeExecutionEnvBase(Env):
             return [f.copy() for f in self.low_level_env._frame_buffer[start:end]]
         return []
 
+    # ── dense RGB-D passthroughs (track-judge arm) — mirror the video passthroughs above;
+    #    the methods live on the low-level env (simulators/libero.py). ──────────────────
+    def enable_dense_rgbd_capture(self, enabled: bool = True, *, clear: bool = True) -> None:
+        self.low_level_env.enable_dense_rgbd_capture(enabled, clear=clear)
+
+    def get_rgbd_frames_range(self, start: int, end: int):
+        return self.low_level_env.get_rgbd_frames_range(start, end)
+
+    def camera_params(self) -> dict:
+        return self.low_level_env.camera_params()
+
     def get_wrist_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
         if hasattr(self.low_level_env, "get_wrist_video_frames"):
             return self.low_level_env.get_wrist_video_frames(clear=clear)

@@ -90,7 +90,7 @@ class Tapip3DError(RuntimeError):
 class Tapip3DClient:
     def __init__(self, socket_path: str = "/tmp/demo_bridge/sockets/tapip3d.sock",
                  *, connect_timeout: float = 60.0):
-        self.socket_path = socket_path
+        self.socket_path = socket_path or "/tmp/demo_bridge/sockets/tapip3d.sock"
         self._connect_timeout = connect_timeout
         self._sock: Optional[socket.socket] = None
 
