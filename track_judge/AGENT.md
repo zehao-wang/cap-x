@@ -16,19 +16,39 @@ the TAPIP3D tracker, geometry libs, …); it is not restricted to a fixed librar
 whole point: replace the per-turn VLM judgment (the VDM) with code the agent writes once for
 the task. Tracking (TAPIP3D 3D trajectories) is the primary signal that code uses.
 
-### Two levels — keep them separate
-1. **RUNTIME (the agent under test).** Runs in **cap-x's standard environment** (`.venv` /
-   `.venv-libero`), executing libero-pro exactly as cap-x normally does. The **only** LLM
-   call is the agent **writing** the plan + judge code (single Gemini, cap-agent0). After
-   that, execution and judgment are **pure code — no LLM, no human**. This is what
-   `benchmark.py` measures. Nothing in this file changes how runtime behaves except the
-   `state_judge` switch and the design files the agent's code-writing is conditioned on.
-2. **SELF-EVOLVE (this playbook — an EXTERNAL meta-loop, exactly like motion_plan/self_evolve).**
-   Separate, fresh Claude Code sessions that, **based on the experiment results**, edit the
-   agent's *design* (`track_judge/algo/`: the judge-codegen prompt, `judge_lib`, the harness)
-   from outside, re-benchmark, accept/reject, and commit. The self-evolve loop is **not part
-   of the runtime agent** and never runs during a robot rollout — it has the full runnable
-   cap-x system as its evaluation environment. You, reading this, are the self-evolve level.
+### Two levels + the roles — keep them separate
+1. **RUNTIME (the agent under test) — the *restricted* cap-x agent.** Runs in cap-x's standard
+   environment (`.venv` / `.venv-libero`), executing libero-pro as cap-x normally does. The
+   **only** LLM call is the agent **writing** the plan + judge code (single Gemini, cap-agent0);
+   after that, execution and judgment are **pure code — no LLM, no human**. This is what
+   `benchmark.py` measures. cap-x is deliberately restricted (and may get *more* restricted);
+   the aspiration is that its design, too, can auto-evolve. Nothing here changes runtime except
+   the `state_judge` switch and the design files the agent's code-writing is conditioned on.
+2. **SELF-EVOLVE (this playbook) — a *fully-privileged coding agent* (Claude Code), an EXTERNAL
+   meta-loop like motion_plan/self_evolve.** Fresh sessions that, **from the experiment results**,
+   build/complete what the restricted runtime LACKS — its **tools and agent-design**
+   (`track_judge/algo/`: judge-codegen prompt, `judge_lib`, harness) — then re-benchmark,
+   accept/reject, commit. It is **not part of the runtime agent** and never runs during a
+   rollout; it has the full runnable cap-x system as its evaluation environment. **You, reading
+   this, are this level.** Per §9.7, what it adds should be deterministic HARNESS/tooling, not
+   prompt patches.
+
+**Where cap-x-se fits.** cap-x-se is the eventual agent that runs *autonomously in the restricted
+env and accumulates knowledge from feedback*. This experiment is a cap-x-se update that
+**deliberately drops the human-feedback / promoted-library half** (see §9.1, and why
+`atomic_task_library` + `use_long_term_library` are removed): we test whether a self-evaluating
+agent (self-plan + self-judge as code) beats the VDM with **no feedback loop at all**.
+
+**DESIGN NORTH-STAR — make a WEAK runtime model succeed.** The restricted runtime uses *weaker*
+VLMs (Gemini, Qwen3.6); the strong Claude self_evolve coder's purpose is to build an agent
+design that lets even a simple model automate reliably. So: **push reasoning OUT of the runtime
+LLM and INTO deterministic tooling/harness** — a weak model can't be trusted to do reliable
+visual judgment (the VDM), but it *can* call deterministic geometric tracking code we provide.
+This is the deepest reason the thesis should hold and why harness ≻ prompt (§9.7). Corollaries:
+(a) a design that only works because a *strong* model compensates for a weak harness is a
+FAILURE of this goal; (b) don't overfit to one runtime model — prefer designs that should
+transfer across weak models (Gemini today; sanity-check Qwen3.6 when a generation's gain looks
+model-specific).
 
 ## ▶ AUTONOMOUS MODE — pre-authorized; never ask permission
 Run the loop end-to-end. You decide the hypothesis, edit `track_judge/algo/`, run the eval,
