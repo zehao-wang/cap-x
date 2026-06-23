@@ -84,10 +84,17 @@ visual_differencing_model: google/gemini-3.1-pro-preview
 use_img_differencing: true
 use_parallel_ensemble: false
 use_multimodel: false
+# Harness-first error fix (smoke triage): the promoted atomic-task-library skills (e.g.
+# pick(), which calls `sample_grasp_pose`) were authored for the PRIVILEGED API and crash
+# under the libero REDUCED API (which grasps via Contact-GraspNet plan_grasp/select_top_down_grasp,
+# auto-started from api_servers). Exposing them makes the agent "prefer" an incompatible skill.
+# Until the promoted library is API-scoped, keep it off so the agent composes libero-native
+# primitives. Same setting for both arms → fair A/B.
+use_long_term_library: false
 
 # Arm switch (Phase-0 seam): tracking = agent-written geometric judge (no VLM).
 # Set to `vdm` for the frozen baseline arm A; benchmark.py overrides this per --arm.
-state_judge: tracking
+state_judge: vdm
 
 trials: 50
 num_workers: 10

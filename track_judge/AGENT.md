@@ -311,8 +311,30 @@ untouched.
 5. **Always save tracking-viz** (§5). A generation without debug visualizations is incomplete.
 6. **Report both metrics, honestly** (§7). The thesis is a *pair* (success AND speed); never
    claim it on one.
+7. **Prefer the HARNESS over the PROMPT — for fixes AND improvements.** A prompt change is
+   LLM-dependent: it works probabilistically and can silently stop working when the model or
+   its sampling varies. A harness change is deterministic and reproducible. So when a problem
+   (an error, a slow step, a recurring failure mode) can be solved structurally — fix the API/
+   library, make the env hand out writable arrays, add a primitive to `judge_lib`, scope what
+   the agent is offered — do that, NOT a "please remember to…" prompt admonition. Triage every
+   issue this way: **harness first; prompt only when the change is genuinely an instruction the
+   agent must reason about and cannot be made structural.** (Example fix from Phase-0 smoke: the
+   promoted privileged-API `pick()` crashed under the libero reduced API → fixed in the harness
+   via `use_long_term_library: false`, not by prompting the agent to "avoid pick".)
 
 ---
+
+## 9b. Future agent-design considerations (record; act when a generation makes it relevant)
+These are larger design moves the self-evolve loop may pursue once the basics work — note them
+in `EVOLUTION.md`/`REPORT.md` when touched:
+- **API discovery as a tool, not a hardcoded prompt dump.** cap-agent0 currently concatenates
+  every API's `combined_doc()` into one fixed prompt. A more scalable, robust design gives the
+  agent a queryable tool (a `read`/`list_apis`/`help(name)` function) to discover and pull API
+  signatures on demand — smaller prompts, less brittle, and it composes with API-scoping (so an
+  agent only sees primitives valid for the active env). Prefer this over ever-growing prompts.
+- **API-scoped promoted library.** Promoted/atomic skills should be tagged with the API they
+  target so an incompatible skill is never offered (the root cause of the Phase-0 `pick()`
+  crash). This is the principled version of the `use_long_term_library: false` stopgap.
 
 ## 10. Task decomposition + parallel sub-agents (encouraged)
 A generation's *coding* may be split and run in parallel — spawn sub-agents for independent

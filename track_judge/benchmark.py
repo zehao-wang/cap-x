@@ -297,24 +297,50 @@ def run_eval(arm: str, suites: List[str], output_dir: str,
     summary's ``dropped`` block so a subsampled run never reads as the full 3000.
     """
     _patch_state_judge(arm)
-    py = os.path.join(REPO, ".venv", "bin", "python")
+    _ensure_libero_config()
+    # LIBERO runs in .venv-libero (its pinned robosuite 1.4 fork conflicts with the main .venv);
+    # invoke run_libero_batch as a module so capx + libero resolve under that env (cwd=REPO).
+    py = os.path.join(REPO, ".venv-libero", "bin", "python")
     py = py if os.path.exists(py) else sys.executable
+    env = dict(os.environ)
+    env.setdefault("MUJOCO_GL", "egl")                 # headless GPU render (canonical libero path)
+    env.setdefault("MUJOCO_EGL_DEVICE_ID", env.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0])
+    env.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
     rc = 0
     for r in range(max(1, repeat)):
-        cmd = [py, os.path.join(REPO, "capx", "envs", "scripts", "run_libero_batch.py"),
-               "--base-config-path", CONFIG,
-               "--suites", *suites,
-               "--output-dir", output_dir,
-               "--record-video", "True"]
+        # run_libero_batch uses `tyro.cli(main)` with `main(args: LiberoBatchLaunchArgs)`,
+        # so every flag is namespaced under `--args.` (see scripts/run_agent0_qwen36_libero.sh).
+        cmd = [py, "-m", "capx.envs.scripts.run_libero_batch",
+               "--args.base-config-path", CONFIG,
+               "--args.suites", *suites,
+               "--args.output-dir", output_dir,
+               "--args.record-video", "True"]
         if max_tasks_per_suite is not None:
-            cmd += ["--max-tasks-per-suite", str(max_tasks_per_suite)]
+            cmd += ["--args.max-tasks-per-suite", str(max_tasks_per_suite)]
         if total_trials is not None:
-            cmd += ["--total-trials", str(total_trials)]
+            cmd += ["--args.total-trials", str(total_trials)]
         print(f"[benchmark] eval arm={arm} repeat {r + 1}/{repeat}: {' '.join(cmd)}")
-        rc = subprocess.call(cmd, cwd=REPO)
+        rc = subprocess.call(cmd, cwd=REPO, env=env)
         if rc != 0:
             print(f"[benchmark] WARNING: batch exited {rc} (repeat {r + 1})")
     return rc
+
+
+def _ensure_libero_config() -> None:
+    """LIBERO needs ~/.libero/config.yaml on headless nodes (points at the vendored root).
+    Create it on demand, mirroring scripts/run_agent0_qwen36_libero.sh."""
+    cfg = os.path.expanduser("~/.libero/config.yaml")
+    if os.path.exists(cfg):
+        return
+    root = os.path.join(REPO, "capx", "third_party", "LIBERO-PRO", "libero", "libero")
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    with open(cfg, "w") as f:
+        f.write(f"benchmark_root: {root}\n"
+                f"bddl_files: {root}/bddl_files\n"
+                f"init_states: {root}/init_files\n"
+                f"datasets: {root}/../datasets\n"
+                f"assets: {root}/assets\n")
+    print(f"[benchmark] created {cfg}")
 
 
 # ── persistence + report ─────────────────────────────────────────────────────────
