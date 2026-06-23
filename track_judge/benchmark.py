@@ -184,8 +184,10 @@ def aggregate(arm: str, gen: Optional[int], suites: List[str],
 
     # trial-level
     gt = [bool(t.get("gt_success")) for t in traces if t.get("gt_success") is not None]
-    wall = [t.get("wallclock_s") for t in traces]
-    vlm_per_turn = _per_turn(traces, "vlm_calls") if traces else []
+    # trace (agent B) writes trial-level `total_wall_clock_s` and per-turn `vlm_call`.
+    wall = [w for t in traces
+            if (w := t.get("total_wall_clock_s", t.get("wallclock_s"))) is not None]
+    vlm_per_turn = _per_turn(traces, "vlm_call") if traces else []
 
     overall_success = _mean([1.0 if g else 0.0 for g in gt]) if gt else None
     overall = {
@@ -216,7 +218,9 @@ def aggregate(arm: str, gen: Optional[int], suites: List[str],
             sr = _mean(sg) if sg else None
         per_suite[s] = {
             "success_rate": sr,
-            "task_time_median_s": _median([t.get("wallclock_s") for t in s_traces]),
+            "task_time_median_s": _median(
+                [w for t in s_traces
+                 if (w := t.get("total_wall_clock_s", t.get("wallclock_s"))) is not None]),
             "held_out": s in HELD_OUT_SUITES,
         }
 
