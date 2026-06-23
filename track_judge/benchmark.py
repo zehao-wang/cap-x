@@ -287,8 +287,15 @@ def _patch_state_judge(arm: str) -> None:
 
 
 def run_eval(arm: str, suites: List[str], output_dir: str,
-             max_tasks_per_suite: Optional[int], repeat: int) -> int:
-    """Drive run_libero_batch for `arm`. `repeat` re-runs the batch (noise control)."""
+             max_tasks_per_suite: Optional[int], repeat: int,
+             total_trials: Optional[int] = None) -> int:
+    """Drive run_libero_batch for `arm`. `repeat` re-runs the batch (noise control).
+
+    libero-pro is large (6 suites x 10 tasks x 50 init-states = 3000 trials/arm), so the
+    experiment SUBSAMPLES: ``max_tasks_per_suite`` caps tasks/suite and ``total_trials`` caps
+    init-states/task (the runner runs trial ids 1..total_trials). Both are recorded in the
+    summary's ``dropped`` block so a subsampled run never reads as the full 3000.
+    """
     _patch_state_judge(arm)
     py = os.path.join(REPO, ".venv", "bin", "python")
     py = py if os.path.exists(py) else sys.executable
@@ -301,6 +308,8 @@ def run_eval(arm: str, suites: List[str], output_dir: str,
                "--record-video", "True"]
         if max_tasks_per_suite is not None:
             cmd += ["--max-tasks-per-suite", str(max_tasks_per_suite)]
+        if total_trials is not None:
+            cmd += ["--total-trials", str(total_trials)]
         print(f"[benchmark] eval arm={arm} repeat {r + 1}/{repeat}: {' '.join(cmd)}")
         rc = subprocess.call(cmd, cwd=REPO)
         if rc != 0:
@@ -376,7 +385,10 @@ def main(argv=None) -> int:
     ap.add_argument("--gen", type=int, default=None, help="generation index")
     ap.add_argument("--out", type=str, default=None,
                     help="results/<NAME> subdir name (default gen<NNN> or baseline_<arm>)")
-    ap.add_argument("--max-tasks-per-suite", type=int, default=None)
+    ap.add_argument("--max-tasks-per-suite", type=int, default=None,
+                    help="cap tasks/suite (libero-pro has 10/suite) — subsample for tractability")
+    ap.add_argument("--total-trials", type=int, default=None,
+                    help="cap init-states/task (libero-pro has 50/task); runs trial ids 1..N")
     ap.add_argument("--repeat", type=int, default=1, help="re-runs of the batch (noise)")
     ap.add_argument("--output", type=str, default=None,
                     help="explicit results dir path (overrides --out)")
@@ -404,16 +416,19 @@ def main(argv=None) -> int:
     eval_output = args.eval_output or os.path.join(REPO, "outputs", f"track_judge_{tag}")
 
     if not args.no_eval:
-        run_eval(args.arm, suites, eval_output, args.max_tasks_per_suite, args.repeat)
+        run_eval(args.arm, suites, eval_output, args.max_tasks_per_suite, args.repeat,
+                 total_trials=args.total_trials)
 
     found = discover(eval_output, suites)
     summary = aggregate(args.arm, gen, suites, found)
     summary["dropped"] = {  # what was capped — a partial run must not read as full
         "max_tasks_per_suite": args.max_tasks_per_suite,
+        "total_trials": args.total_trials,
         "repeat": args.repeat,
         "suites_run": suites,
         "held_out_suites": sorted(HELD_OUT_SUITES),
         "eval_output": eval_output,
+        "full_suite_size": "6 suites x 10 tasks x 50 init-states = 3000 trials/arm",
     }
     summary["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
     _persist(out_dir, summary)

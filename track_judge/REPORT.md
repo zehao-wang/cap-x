@@ -47,7 +47,11 @@ self-evolve session can see exactly where time and errors accumulate and optimiz
   APIs; multi-turn REGENERATE/FINISH self-correction. **Single LLM = Gemini**
   (`google/gemini-3.1-pro-preview`), ensemble disabled.
 - **Benchmark:** libero-pro (`capx/third_party/LIBERO-PRO`), success = ground-truth
-  `check_success()`. Dev suites for iteration; ≥2 suites held out for generalisation.
+  `check_success()`. **Size: 6 suites × 10 tasks × 50 init-states = 3000 trials/arm** — too
+  large to run fully each iteration, so we evaluate on a **fixed sampled subset**
+  (`--max-tasks-per-suite` × `--total-trials`, recorded in `summary.json.dropped` so a
+  subsample never reads as the full set). Dev suites for iteration; ≥2 suites held out for
+  generalisation.
 - **Baseline (Arm A):** stock VDM (`_get_visual_differencing_feedback` /
   `_get_video_differencing_feedback`), Gemini VLM.
 - **Treatment (Arm B):** VDM removed; per-turn feedback comes from agent-written geometric

@@ -71,8 +71,14 @@ the world frame, and the agent's judge function applies geometric primitives to 
 \{progress, done, failure, abort\}. All tracking is visualized and saved for debugging.
 
 \section{Experimental setup}
-\textbf{Benchmark:} libero-pro; success is ground-truth \texttt{check\_success()}. A dev subset
-is used to iterate; $\geq 2$ suites are held out for generalisation and never tuned on.
+\textbf{Benchmark:} libero-pro. We use six suites (object/goal/spatial, each in a \emph{swap}
+and a \emph{task} perturbation), \textbf{10 tasks per suite with 50 initial states each ---
+3000 trials per arm in total}. Evaluating all 3000 per arm every self-evolve iteration is
+intractable (each trial is a multi-turn, multi-LLM-call rollout), so experiments run on a
+\textbf{fixed sampled subset} (a capped number of tasks/suite and initial-states/task,
+recorded in each run's \texttt{summary.json} so a subsampled run is never reported as the
+full set). Success is ground-truth \texttt{check\_success()}. A dev subset is used to iterate;
+$\geq 2$ suites are held out for generalisation and never tuned on.
 \textbf{Metrics:} task success rate and median wall-clock per task, reported together.
 \textbf{Protocol:} an autonomous self-evolve loop optimises Arm B; the win condition is to beat
 Arm A on \emph{both} metrics. Arm B is scored as the pure method (no VDM/ground-truth backstop).
