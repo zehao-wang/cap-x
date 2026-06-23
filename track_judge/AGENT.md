@@ -246,8 +246,14 @@ untouched.
   on a single flaky trial), `task_time_median_s` (tolerance ~5%). A **hard gate**: a
   generation that crashes the judge / throws on any task, or that silently judges every task
   "done" (degenerate), is an automatic REJECT regardless of numbers.
-- **Informational (report, never gate):** per-judgment latency, #tracked points, mask count,
-  TAPIP3D ms.
+- **Informational (report, never gate) — but ALWAYS recorded for the next session.** An
+  agentic solution is multi-step / multi-interaction; per-step time and per-step error are the
+  real-deployment cost we optimize. `benchmark.py` profiles and writes to `summary.json`:
+  per-step timing (`codegen/exec/judge/track` medians + p90), interaction counts (turns, VLM
+  calls/turn, aborts/finishes), and the error breakdown (judge-vs-ground-truth confusion:
+  `false_done`/`missed_done`, plus `failure_categories`). Read these each generation to see
+  where time and errors accumulate, and target them — that is how the thesis (faster AND more
+  successful) is actually won.
 - **Held-out split.** Tune on the **dev subset** only. Keep ≥2 libero-pro suites **held out**;
   run them only as an occasional generalisation check, **never** in the per-gen loop. Tuning
   on the held-out suites is a FAILURE of the experiment.

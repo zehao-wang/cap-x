@@ -31,6 +31,16 @@ tracks is a **decorrelated, physically grounded** signal and is local/cheap.
   continuous metric signal, collision/clearance, grasp-slip, early failure detection,
   occlusion-robust 3D containment (§5).
 
+**What we optimize is the agentic pipeline's cost.** An agentic solution is multi-step and
+multi-interaction: every LLM call, code execution, and environment interaction costs time and
+can introduce error, and that compounded cost+error is what matters for real deployment.
+Removing the VDM deletes one LLM call \emph{per turn} --- one step's latency and one step's
+error source --- across every interaction. We therefore \emph{profile per step}, not just
+aggregate: \texttt{benchmark.py} records per-turn \texttt{codegen/exec/judge/track} times,
+interaction counts (turns, VLM calls, aborts), and an error/correctness breakdown (judge-vs-
+ground-truth confusion, failure categories) into each generation's \texttt{summary.json}, so a
+self-evolve session can see exactly where time and errors accumulate and optimize them.
+
 ## 3. Background / system under test
 - **Agent:** cap-agent0, the single-LLM Code-as-Policies loop
   (`capx/envs/trial.py:_run_single_trial`); writes raw Python executed against bound robot
