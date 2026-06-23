@@ -157,6 +157,11 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
         if getattr(args, "web_ui_port", None) is not None
         else configs_dict.get("web_ui_port", 8200),
         "save_multiturn_prompts": configs_dict.get("save_multiturn_prompts", False),
+        # State-judgment arm: CLI "vdm"|"tracking" overrides YAML; "vdm" preserves
+        # existing behaviour byte-identically.
+        "state_judge": args.state_judge
+        if getattr(args, "state_judge", "vdm") not in (None, "vdm")
+        else configs_dict.get("state_judge", "vdm"),
     }
 
     return env_factory, merged_config, api_servers

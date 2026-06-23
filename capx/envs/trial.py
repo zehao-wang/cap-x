@@ -60,6 +60,114 @@ if TYPE_CHECKING:
 
 MULTITURN_LIMIT = 10
 
+
+# ---------------------------------------------------------------------------
+# Tracking arm (state_judge == "tracking") — helpers
+# ---------------------------------------------------------------------------
+# The harness + prompt fragment live under track_judge/algo/ and are owned by a
+# parallel agent; they may not exist on disk yet. Import lazily inside the
+# tracking branch and guard so arm A ("vdm") stays importable/runnable
+# regardless of whether track_judge.* resolves.
+
+def _is_tracking_arm(config: dict[str, Any]) -> bool:
+    """True iff the trial runs the tracking state-judge arm (arm B)."""
+    return config.get("state_judge", "vdm") == "tracking"
+
+
+def _append_judge_prompt_fragment(obs: dict[str, Any]) -> bool:
+    """Append the judge-codegen prompt fragment so the agent also writes
+    ``judge_state(ctx)``. Returns True on success, False if unavailable."""
+    try:
+        from track_judge.algo.judge_prompt import JUDGE_PROMPT_FRAGMENT
+    except Exception as exc:  # harness not written yet
+        print(f"[track-judge] JUDGE_PROMPT_FRAGMENT unavailable: {exc}")
+        return False
+    obs["full_prompt"][-1]["content"][0]["text"] += f"\n\n{JUDGE_PROMPT_FRAGMENT}"
+    return True
+
+
+def _make_track_judge(config: dict[str, Any], trial: int):
+    """Construct a per-trial ``TrackJudge`` writing viz to
+    ``<trial dir>/tracking-viz``. Returns the instance or ``None`` if the
+    harness is unavailable."""
+    try:
+        from track_judge.algo.track_judge import TrackJudge
+    except Exception as exc:  # harness not written yet
+        print(f"[track-judge] TrackJudge unavailable: {exc}")
+        return None
+    viz_dir = None
+    if config.get("output_dir"):
+        viz_dir = os.path.join(
+            config["output_dir"], f"trial_{trial:02d}", "tracking-viz"
+        )
+        os.makedirs(viz_dir, exist_ok=True)
+    return TrackJudge(socket_path=None, viz_dir=viz_dir)
+
+
+def _run_tracking_judge(
+    env: CodeExecutionEnvBase,
+    track_judge,
+    task_description: str,
+    frame_start: int,
+    frame_end: int,
+    turn_idx: int,
+    judge_state: dict[str, Any],
+) -> tuple[dict[str, Any], float]:
+    """Run the tracking harness for one turn.
+
+    Returns ``(verdict, track_s)`` where ``verdict`` follows the harness
+    contract (``feedback``/``done``/``abort``/``progress``) and ``track_s`` is
+    the TAPIP3D time pulled from the env step info if available.
+
+    If the agent never defined ``judge_state(ctx)``, returns a clear note
+    verdict (no harness call).
+    """
+    judge_fn = env._exec_globals.get("judge_state")
+    if judge_fn is None:
+        verdict = {
+            "feedback": (
+                "No judge_state(ctx) function was defined by the generated code, "
+                "so the task state could not be evaluated geometrically. "
+                "Define a top-level def judge_state(ctx) to enable self-evaluation."
+            ),
+            "done": False,
+            "abort": False,
+            "progress": None,
+        }
+        return verdict, 0.0
+
+    rgb, depth = env.get_rgbd_frames_range(frame_start, frame_end)
+    cam = env.camera_params()
+    verdict = track_judge.judge_turn(
+        rgb=rgb,
+        depth=depth,
+        K=cam["K"],
+        world_to_cam=cam["world_to_cam"],
+        task_description=task_description,
+        judge_fn=judge_fn,
+        state=judge_state,
+        viz_tag=f"turn_{turn_idx:02d}",
+    )
+    track_s = float(verdict.get("track_ms", verdict.get("model_ms", 0.0)) or 0.0) / 1000.0
+    return verdict, track_s
+
+
+def _write_track_judge_trace(
+    trial_dir: "str | None",
+    trace: dict[str, Any],
+) -> None:
+    """Persist the per-trial profiling/diagnostics trace as
+    ``track_judge_trace.json`` in ``trial_dir`` (the final result-suffixed dir)."""
+    if not trial_dir:
+        return
+    os.makedirs(trial_dir, exist_ok=True)
+    try:
+        with open(os.path.join(trial_dir, "track_judge_trace.json"), "w") as f:
+            json.dump(trace, f, indent=2)
+    except Exception as exc:
+        print(f"[track-judge] trace write failed: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Shared formatting helpers
 # ---------------------------------------------------------------------------
@@ -531,7 +639,11 @@ def _handle_multi_turn_step(
     turn_frames: list[np.ndarray] | None = None,
     wrist_turn_frames: list[np.ndarray] | None = None,
     wrist_base64_history: list[str] | None = None,
-) -> tuple[str, str | None, str | None, dict | None, list | None]:
+    track_judge=None,
+    judge_state: dict[str, Any] | None = None,
+    frame_range: tuple[int, int] | None = None,
+    turn_idx: int = 0,
+) -> tuple[str, str | None, str | None, dict | None, list | None, dict[str, Any]]:
     """Execute one multi-turn decision step.
 
     Captures visual feedback, builds the decision prompt, queries the model,
@@ -542,12 +654,28 @@ def _handle_multi_turn_step(
         wrist_turn_frames: Frames from the wrist camera for this turn (for video differencing).
         wrist_base64_history: History of wrist camera base64 images for image-based
             differencing with multiview.
+        track_judge: Per-trial TrackJudge instance (tracking arm only; None for vdm).
+        judge_state: Mutable per-trial state dict threaded into the tracking judge.
+        frame_range: (frame_start, frame_end) for the tracking arm's dense RGB-D fetch.
+        turn_idx: Zero-based turn index, used for viz tags and the trace.
 
     Returns:
-        (decision, new_code, reasoning, multiturn_ensemble_entry)
-        where decision is "regenerate", "finish", or "continue".
+        (decision, new_code, reasoning, multiturn_ensemble_entry, decision_prompt, turn_diag)
+        where decision is "regenerate", "finish", or "abort"; turn_diag carries
+        per-turn timings + verdict summary for the trace.
     """
     use_wrist = config.get("use_wrist_camera", False)
+    tracking_arm = _is_tracking_arm(config)
+    turn_diag: dict[str, Any] = {
+        "judge_s": 0.0,
+        "track_s": 0.0,
+        "verdict": None,
+        "done": False,
+        "abort": False,
+        "progress": None,
+        "feedback_summary": None,
+        "vlm_call": 0,
+    }
 
     executed_code = "\n".join(code_blocks[:code_block_idx])
     console_text = prepare_multiturn_console_text(
@@ -584,18 +712,60 @@ def _handle_multi_turn_step(
     differencing_feedback = None
     is_video_feedback = False
 
-    if config.get("use_video_differencing") and turn_frames:
+    if tracking_arm:
+        # Arm B: geometric self-evaluation via the TrackJudge harness — NO VLM.
+        # The verdict's done -> FINISH (no LLM decision query), abort -> terminate,
+        # otherwise its feedback text is fed into the REGENERATE decision below.
+        judge_t0 = time.perf_counter()
+        if track_judge is not None and frame_range is not None:
+            verdict, track_s = _run_tracking_judge(
+                env, track_judge, task_description,
+                frame_range[0], frame_range[1], turn_idx,
+                judge_state if judge_state is not None else {},
+            )
+        else:
+            verdict = {
+                "feedback": "Tracking judge harness unavailable.",
+                "done": False, "abort": False, "progress": None,
+            }
+            track_s = 0.0
+        turn_diag["judge_s"] = time.perf_counter() - judge_t0
+        turn_diag["track_s"] = track_s
+        turn_diag["done"] = bool(verdict.get("done", False))
+        turn_diag["abort"] = bool(verdict.get("abort", False))
+        turn_diag["progress"] = verdict.get("progress")
+        fb = verdict.get("feedback") or ""
+        turn_diag["feedback_summary"] = fb[:280]
+
+        if turn_diag["done"]:
+            turn_diag["verdict"] = "finish"
+            return "finish", None, None, None, None, turn_diag
+        if turn_diag["abort"]:
+            turn_diag["verdict"] = "abort"
+            return "abort", None, fb or "Tracking judge aborted the trial.", None, None, turn_diag
+
+        # Not done / not aborting: hand the geometric feedback to the LLM as the
+        # differencing feedback and run the normal REGENERATE/FINISH decision.
+        differencing_feedback = fb or None
+        turn_diag["verdict"] = "feedback"
+    elif config.get("use_video_differencing") and turn_frames:
         # Video-based differencing: pass video of this turn to VDM
+        judge_t0 = time.perf_counter()
         differencing_feedback = _get_video_differencing_feedback(
             visual_differencing_args, task_description, turn_frames, wrist_turn_frames,
         )
+        turn_diag["judge_s"] = time.perf_counter() - judge_t0
+        turn_diag["vlm_call"] = 1
         is_video_feedback = True
     elif config["use_img_differencing"] and len(visual_feedback_base64_history) >= 2:
         # Image-based differencing: pass before/after images to VDM
+        judge_t0 = time.perf_counter()
         differencing_feedback = _get_visual_differencing_feedback(
             visual_differencing_args, task_description, visual_feedback_base64_history,
             wrist_base64_history=wrist_base64_history,
         )
+        turn_diag["judge_s"] = time.perf_counter() - judge_t0
+        turn_diag["vlm_call"] = 1
 
     # Only pass visual feedback to prompt if visual_feedback is enabled
     if not config["use_visual_feedback"]:
@@ -634,8 +804,10 @@ def _handle_multi_turn_step(
 
     reasoning = content["reasoning"]
     decision, new_code = _parse_multi_turn_decision(content["content"])
+    if turn_diag.get("verdict") is None:
+        turn_diag["verdict"] = decision
 
-    return decision, new_code, reasoning, multiturn_ensemble_entry, decision_prompt
+    return decision, new_code, reasoning, multiturn_ensemble_entry, decision_prompt, turn_diag
 
 
 # ---------------------------------------------------------------------------
@@ -660,9 +832,11 @@ def _run_single_trial(
         5. Save artifacts (code, logs, per-turn videos, combined video) and return a TrialSummary.
     """
     trial_start_time = time.time()
+    trial_wall_t0 = time.perf_counter()
 
     use_video_diff = config.get("use_video_differencing", False)
     use_wrist = config.get("use_wrist_camera", False)
+    tracking_arm = _is_tracking_arm(config)
 
     # --- 1. Reset environment ---
     obs, _ = env.reset(options={"trial": trial}, seed=trial)
@@ -690,6 +864,19 @@ def _run_single_trial(
         # Video differencing needs frame recording even without record_video
         env.enable_video_capture(True, clear=True, wrist_camera=use_wrist)
 
+    # --- Tracking arm (state_judge == "tracking") setup ---
+    # Enable dense RGB-D capture for TAPIP3D, append the judge-codegen fragment
+    # so the agent also writes judge_state(ctx), and build a per-trial harness.
+    track_judge = None
+    judge_state: dict[str, Any] = {}
+    if tracking_arm:
+        if hasattr(env, "enable_dense_rgbd_capture"):
+            env.enable_dense_rgbd_capture(True, clear=True)
+        else:
+            print("[track-judge] env has no enable_dense_rgbd_capture; arm B degraded")
+        _append_judge_prompt_fragment(obs)
+        track_judge = _make_track_judge(config, trial)
+
     # --- Shared trial state ---
     code_blocks: list[str] = []
     code_block_metadata: list[dict[str, Any]] = []
@@ -706,6 +893,13 @@ def _run_single_trial(
 
     # Per-turn frame tracking (for video differencing and per-turn video saving)
     turn_frame_ranges: list[tuple[int, int]] = []
+
+    # Per-step profiling + correctness diagnostics (track_judge_trace.json).
+    # arm "vdm" still records timings + vlm_calls so benchmark.py can aggregate
+    # both arms uniformly; the agreement record is tracking-arm only.
+    trace_turns: list[dict[str, Any]] = []
+    trace_codegen_s = 0.0  # initial-codegen time; per-turn regen adds to its turn
+    track_judge_final_done = False  # last tracking verdict's done (for agreement)
 
     # Wrist camera base64 history for image-based multiview differencing
     wrist_base64_history: list[str] | None = [] if use_wrist else None
@@ -750,7 +944,9 @@ def _run_single_trial(
         reasoning = None
         ensemble_data = None
     else:
+        _codegen_t0 = time.perf_counter()
         raw_code, reasoning, ensemble_data = _query_initial_code(args, config, obs)
+        trace_codegen_s = time.perf_counter() - _codegen_t0
 
     # Initialize partial artifacts for timeout recovery
     if partial_artifacts is not None:
@@ -796,9 +992,11 @@ def _run_single_trial(
     terminated = truncated = False
     code_block_idx = 0
 
-    # Track whether we're recording frames (for video diff or record_video)
+    # Track whether we're recording frames (for video diff, record_video, or the
+    # tracking arm's dense RGB-D capture). The tracking arm uses the frame ranges
+    # to slice the dense RGB-D video per turn.
     recording_frames = (
-        (config["record_video"] or use_video_diff)
+        (config["record_video"] or use_video_diff or tracking_arm)
         and hasattr(env, "get_video_frame_count")
     )
 
@@ -809,11 +1007,32 @@ def _run_single_trial(
         # Record frame index before step
         frame_start = env.get_video_frame_count() if recording_frames else 0
 
+        _exec_t0 = time.perf_counter()
         obs_next, reward, terminated, truncated, info_step = env.step(code)
+        _exec_s = time.perf_counter() - _exec_t0
 
         # Record frame index after step
         frame_end = env.get_video_frame_count() if recording_frames else 0
         turn_frame_ranges.append((frame_start, frame_end))
+
+        # Per-turn trace entry; codegen_s is attributed to the codegen that
+        # produced this block (the initial gen for turn 0, the regen for later
+        # turns), summed below from the running trace_codegen_s accumulator.
+        turn_trace: dict[str, Any] = {
+            "turn": len(turn_frame_ranges) - 1,
+            "codegen_s": trace_codegen_s,
+            "exec_s": _exec_s,
+            "judge_s": 0.0,
+            "track_s": 0.0,
+            "num_blocks": len(code_blocks),
+            "verdict": None,
+            "done": None,
+            "abort": None,
+            "feedback_summary": None,
+            "decision": None,
+            "vlm_call": 0,
+        }
+        trace_codegen_s = 0.0  # consumed; next regen will set it again
 
         if partial_artifacts is not None:
             partial_artifacts.update({
@@ -841,7 +1060,8 @@ def _run_single_trial(
                         frame_start, frame_end,
                     )
 
-            decision, new_code, mt_reasoning, mt_ensemble, decision_prompt = _handle_multi_turn_step(
+            _mt_t0 = time.perf_counter()
+            decision, new_code, mt_reasoning, mt_ensemble, decision_prompt, turn_diag = _handle_multi_turn_step(
                 env, obs, args, config, visual_differencing_args,
                 multi_turn_prompt, code_blocks, code_block_idx, info_step,
                 task_description, visual_feedback_imgs, visual_feedback_base64_history,
@@ -849,14 +1069,50 @@ def _run_single_trial(
                 turn_frames=turn_frames,
                 wrist_turn_frames=wrist_turn_frames,
                 wrist_base64_history=wrist_base64_history,
+                track_judge=track_judge,
+                judge_state=judge_state,
+                frame_range=(frame_start, frame_end),
+                turn_idx=turn_trace["turn"],
             )
+            _mt_s = time.perf_counter() - _mt_t0
+
+            # Fold the turn diagnostics into the trace. track_s falls back to the
+            # env step's model_ms if the harness didn't report it.
+            turn_trace["judge_s"] = turn_diag.get("judge_s", _mt_s)
+            turn_trace["track_s"] = turn_diag.get("track_s", 0.0) or (
+                float(info_step.get("model_ms", 0.0) or 0.0) / 1000.0
+            )
+            turn_trace["verdict"] = turn_diag.get("verdict")
+            turn_trace["done"] = turn_diag.get("done")
+            turn_trace["abort"] = turn_diag.get("abort")
+            turn_trace["feedback_summary"] = turn_diag.get("feedback_summary")
+            turn_trace["vlm_call"] = turn_diag.get("vlm_call", 0)
+            if tracking_arm and turn_diag.get("done") is not None:
+                track_judge_final_done = bool(turn_diag.get("done"))
 
             if mt_ensemble is not None:
                 mt_ensemble["regeneration"] = num_regenerations + 1
                 multiturn_ensemble_data.append(mt_ensemble)
 
+            if decision == "abort":
+                # Tracking arm geometric early-abort: stop the trial now.
+                turn_trace["decision"] = "abort"
+                all_responses.append({
+                    "decision": "abort",
+                    "reasoning": new_code or "Tracking judge aborted the trial.",
+                })
+                print(f"Tracking judge aborted the trial: {new_code}")
+                truncated = True
+                trace_turns.append(turn_trace)
+                break
+
             if decision == "regenerate":
                 print("Model chose to regenerate code")
+                turn_trace["decision"] = "regenerate"
+                # The regeneration that follows is the next turn's codegen time.
+                trace_codegen_s = _mt_s - turn_trace["judge_s"]
+                if trace_codegen_s < 0:
+                    trace_codegen_s = 0.0
                 new_blocks = _extract_code(new_code)
                 all_responses.append({
                     "multi_turn_prompt": decision_prompt if config.get("save_multiturn_prompts", False) else None,
@@ -878,6 +1134,7 @@ def _run_single_trial(
                     partial_artifacts["num_regenerations"] = num_regenerations
 
             elif decision == "finish":
+                turn_trace["decision"] = "finish"
                 all_responses.append({
                     "decision": "finish",
                     "reasoning": mt_reasoning if mt_reasoning is not None else (new_code or ""),
@@ -886,7 +1143,13 @@ def _run_single_trial(
                 num_finishes += 1
                 if partial_artifacts is not None:
                     partial_artifacts["num_finishes"] = num_finishes
+                trace_turns.append(turn_trace)
                 break
+
+            trace_turns.append(turn_trace)
+        else:
+            # No multi-turn prompt: still record the turn (codegen + exec only).
+            trace_turns.append(turn_trace)
 
         print(f"Code block {code_block_idx} done")
         print(f"Number of code blocks: {len(code_blocks)}")
@@ -1004,6 +1267,44 @@ def _run_single_trial(
                 print(f"[SkillLibrary] Extracted {len(new_skills)} new skill(s): {new_skills}")
         except Exception as exc:
             print(f"[SkillLibrary] Skill extraction failed: {exc}")
+
+    # --- Per-trial profiling + correctness diagnostics trace ---
+    gt_success = info_step.get("task_completed", None)
+    vlm_calls = sum(int(t.get("vlm_call", 0) or 0) for t in trace_turns)
+    track_judge_trace: dict[str, Any] = {
+        "arm": config.get("state_judge", "vdm"),
+        "task": config.get("task_name", None),
+        "suite": config.get("suite", config.get("suite_name", None)),
+        "trial": trial,
+        "gt_success": bool(gt_success) if gt_success is not None else None,
+        "n_turns": len(trace_turns),
+        "vlm_calls": vlm_calls,
+        "total_wall_clock_s": time.perf_counter() - trial_wall_t0,
+        "turns": trace_turns,
+    }
+    if tracking_arm:
+        # Agreement: did the judge's final done verdict match GT success?
+        # Enables false-done / missed-done stats downstream.
+        track_judge_trace["judge_final_done"] = track_judge_final_done
+        track_judge_trace["agreement"] = (
+            None if gt_success is None
+            else (bool(track_judge_final_done) == bool(gt_success))
+        )
+        track_judge_trace["false_done"] = (
+            None if gt_success is None
+            else (track_judge_final_done and not bool(gt_success))
+        )
+        track_judge_trace["missed_done"] = (
+            None if gt_success is None
+            else (not track_judge_final_done and bool(gt_success))
+        )
+    if config.get("output_dir"):
+        final_trial_dir = os.path.join(
+            config["output_dir"],
+            f"trial_{trial:02d}_sandboxrc_{info_step['sandbox_rc']}"
+            f"_reward_{reward:.3f}_taskcompleted_{int(info_step.get('task_completed', False))}",
+        )
+        _write_track_judge_trace(final_trial_dir, track_judge_trace)
 
     print(f"Trial {trial} took {time.time() - trial_start_time:.2f} seconds")
 

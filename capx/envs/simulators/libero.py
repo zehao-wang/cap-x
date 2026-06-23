@@ -8,7 +8,11 @@ import numpy as np
 import viser
 import viser.extras
 import viser.transforms as vtf
-from robosuite.utils.camera_utils import get_real_depth_map
+from robosuite.utils.camera_utils import (
+    get_camera_extrinsic_matrix,
+    get_camera_intrinsic_matrix,
+    get_real_depth_map,
+)
 from robot_descriptions.loaders.yourdfpy import load_robot_description
 from viser.extras import ViserUrdf
 
@@ -85,6 +89,14 @@ class FrankaLiberoEnv(BaseEnv):
         self._record_wrist_camera = False
         self._wrist_camera_name = "robot0_eye_in_hand"
         self._subsample_rate = 4
+
+        # Dense RGB-D capture path for the tracking arm (arm B). OFF by default,
+        # gated by enable_dense_rgbd_capture(); when on, EVERY motion frame is
+        # captured (no subsample) and a metric-depth buffer is filled in lockstep
+        # with _frame_buffer. Arm A (VDM) never enables this, so its RGB-only,
+        # subsampled behaviour is byte-identical to before.
+        self._record_dense = False
+        self._depth_buffer: list[np.ndarray] = []
         self._full_viser_rate = 20  # Full scene update every 20 steps (cameras + pointcloud)
 
         # Robot link indices for transforms
@@ -262,7 +274,7 @@ class FrankaLiberoEnv(BaseEnv):
                 else:
                     self._update_viser_robot_only()  # Fast robot-only
 
-            if self._record_frames and self._sim_step_count % self._subsample_rate == 0:
+            if self._should_record_frame():
                 self._record_frame()
 
             steps += 1
@@ -297,8 +309,20 @@ class FrankaLiberoEnv(BaseEnv):
         if self.viser_debug and self._sim_step_count % self._subsample_rate == 0:
             self._update_viser_robot_only()
 
-        if self._record_frames and self._sim_step_count % self._subsample_rate == 0:
+        if self._should_record_frame():
             self._record_frame()
+
+    def _should_record_frame(self) -> bool:
+        """Per-step capture gate.
+
+        Arm A (VDM): subsampled ×``_subsample_rate`` (unchanged).
+        Arm B (dense): capture every motion step (effective subsample rate 1).
+        """
+        if not self._record_frames:
+            return False
+        if self._record_dense:
+            return True
+        return self._sim_step_count % self._subsample_rate == 0
 
     def _get_object_pose(self, obj_name: str) -> tuple[np.ndarray, np.ndarray]:
         """Get the pose of an object in the environment as a position (3,) and WXYZ quaternion (4,).
@@ -546,20 +570,119 @@ class FrankaLiberoEnv(BaseEnv):
         if clear:
             self._frame_buffer.clear()
             self._wrist_frame_buffer.clear()
+            self._depth_buffer.clear()
         if enabled:
             self._record_frame()
+
+    def enable_dense_rgbd_capture(self, enabled: bool, clear: bool = True) -> None:
+        """Turn on the dense RGB-D capture path for the tracking arm (arm B).
+
+        When enabled, recording becomes dense (every motion frame, no subsample)
+        AND each captured frame also renders a metric-depth map into
+        ``_depth_buffer`` in lockstep with ``_frame_buffer``. This implies video
+        recording is on. When disabled, falls back to the stock arm-A behaviour
+        (RGB only, ×``_subsample_rate``). Default OFF — arm A never calls this.
+
+        Args:
+            enabled: enable (True) / disable (False) the dense+depth path.
+            clear: clear the RGB / depth / wrist buffers first (default True).
+        """
+        self._record_dense = bool(enabled)
+        self._record_frames = self._record_frames or bool(enabled)
+        if not enabled:
+            # Leave RGB recording as-is; only the dense/depth path is turned off.
+            return
+        if clear:
+            self._frame_buffer.clear()
+            self._wrist_frame_buffer.clear()
+            self._depth_buffer.clear()
+        self._record_frames = True
+        self._record_frame()
 
     def get_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
         frames = [frame.copy() for frame in self._frame_buffer]
         if clear:
             self._frame_buffer.clear()
+            self._depth_buffer.clear()  # keep RGB/depth buffers in lockstep
         return frames
 
     def get_video_frame_count(self) -> int:
+        # Indexes both the RGB and (when dense) the depth buffer in lockstep.
         return len(self._frame_buffer)
 
     def get_video_frames_range(self, start: int, end: int) -> list[np.ndarray]:
         return [frame.copy() for frame in self._frame_buffer[start:end]]
+
+    def get_rgbd_frames_range(
+        self, start: int, end: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Dense RGB-D slice for the tracker, mirroring ``get_video_frames_range``.
+
+        Requires the dense path (``enable_dense_rgbd_capture``); the depth buffer
+        is filled in lockstep with ``_frame_buffer`` so the same ``[start, end)``
+        indexing applies to both.
+
+        Returns:
+            rgb: ``(N, H, W, 3)`` uint8, vertically flipped to match
+                ``get_video_frames_range`` (image-space, row 0 = top).
+            depth: ``(N, H, W)`` float32, metric depth in METRES, flipped to align
+                pixel-for-pixel with ``rgb``.
+        """
+        rgb = np.asarray(self._frame_buffer[start:end], dtype=np.uint8)
+        depth = np.asarray(self._depth_buffer[start:end], dtype=np.float32)
+        return rgb, depth
+
+    def _depth_to_meters(self, buf: np.ndarray) -> np.ndarray:
+        """Linearize MuJoCo's [0,1] z-buffer to metric depth (metres).
+
+        MuJoCo's ``sim.render(..., depth=True)`` returns a normalized OpenGL
+        z-buffer in [0, 1]. The standard MuJoCo/dm_control linearization is::
+
+            near = sim.model.vis.map.znear * sim.model.stat.extent
+            far  = sim.model.vis.map.zfar  * sim.model.stat.extent
+            z    = near / (1 - d * (1 - near / far))
+
+        These attribute paths were verified against the installed mujoco 3.5.0 /
+        robosuite 1.4.0 by reading ``robosuite.utils.camera_utils.get_real_depth_map``
+        (the canonical implementation), which this method delegates to so the
+        conversion stays byte-identical to the depth already exposed in
+        ``get_observation()``.
+        """
+        return get_real_depth_map(self.handle.env.sim, buf).astype(np.float32)
+
+    def camera_params(self) -> dict[str, Any]:
+        """Intrinsics + extrinsics for the ``agentview`` camera (vision convention).
+
+        Returns a dict with::
+
+            K            (3,3) float32 — pinhole intrinsics from MuJoCo fovy + W/H:
+                         fy = (H/2)/tan(fovy/2), fx = fy, cx = W/2, cy = H/2.
+            world_to_cam (4,4) float32 — maps a world point into the camera frame.
+            cam_to_world (4,4) float32 — camera frame -> world (inverse of the above).
+            width, height int — render resolution the K/depth correspond to.
+
+        Convention: the camera frame is the standard VISION (OpenCV) convention —
+        +X right, +Y down, +Z FORWARD along the viewing direction. MuJoCo's native
+        camera frame looks down -Z with +Y up; robosuite's
+        ``get_camera_extrinsic_matrix`` applies the diag(1,-1,-1) axis correction to
+        convert to this vision convention, and is reused here so the pose matches the
+        intrinsics. ``cam_to_world`` therefore takes an OpenCV-frame camera point to
+        world; depth from ``_depth_to_meters`` is the +Z (forward) distance, so a
+        pixel back-projects with ``X_cam = depth * K^{-1} [u, v, 1]^T``.
+        """
+        sim = self.handle.env.sim
+        K = get_camera_intrinsic_matrix(
+            sim, "agentview", self._render_height, self._render_width
+        ).astype(np.float32)
+        cam_to_world = get_camera_extrinsic_matrix(sim, "agentview").astype(np.float32)
+        world_to_cam = np.linalg.inv(cam_to_world).astype(np.float32)
+        return {
+            "K": K,
+            "world_to_cam": world_to_cam,
+            "cam_to_world": cam_to_world,
+            "width": int(self._render_width),
+            "height": int(self._render_height),
+        }
 
     def get_wrist_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
         frames = [frame.copy() for frame in self._wrist_frame_buffer]
@@ -574,13 +697,25 @@ class FrankaLiberoEnv(BaseEnv):
         if not self._record_frames:
             return
 
-        frame = self.handle.env.sim.render(
-            camera_name="agentview",
-            width=self._render_width,
-            height=self._render_height,
-            depth=False,
-        )
-        self._frame_buffer.append(frame[::-1])  # Flip vertically
+        if self._record_dense:
+            # Dense arm B: render RGB + z-buffer in one call, then linearize depth
+            # to metres. MuJoCo returns (rgb, depth) when depth=True.
+            rgb, depth = self.handle.env.sim.render(
+                camera_name="agentview",
+                width=self._render_width,
+                height=self._render_height,
+                depth=True,
+            )
+            self._frame_buffer.append(rgb[::-1])  # Flip vertically (same as RGB path)
+            self._depth_buffer.append(self._depth_to_meters(depth)[::-1])  # match RGB flip
+        else:
+            frame = self.handle.env.sim.render(
+                camera_name="agentview",
+                width=self._render_width,
+                height=self._render_height,
+                depth=False,
+            )
+            self._frame_buffer.append(frame[::-1])  # Flip vertically
 
         if self._record_wrist_camera:
             wrist_frame = self.handle.env.sim.render(

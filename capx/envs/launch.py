@@ -115,6 +115,10 @@ class LaunchArgs:
     use_multimodel: bool | None = None
     """Whether to use multimodel for parallel ensembling."""
 
+    state_judge: str = "vdm"
+    """Per-turn state-judgment arm: ``vdm`` (LLM differencing baseline, default) or
+    ``tracking`` (agent-written geometric judge driven by TAPIP3D 3D tracks)."""
+
     # Web UI configuration
     web_ui: bool | None = None
     """Launch the interactive web UI instead of running trials in headless CLI mode."""

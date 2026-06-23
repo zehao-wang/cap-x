@@ -1,0 +1,93 @@
+# track-judge experiment config — single-LLM Gemini cap-agent0 + tracking state-judge.
+#
+# Copied from franka_libero_cap_agent0_qwen.yaml (single-LLM, ensemble OFF) but pinned to
+# Gemini and with the new `state_judge` arm switch.
+#
+#   ARM B (this file):  state_judge: tracking  → per-turn feedback comes from the
+#                       agent-written geometric judge (TAPIP3D 3D tracks, NO VLM call).
+#   ARM A (baseline):   the VDM sibling = THIS EXACT FILE with the single line
+#                       `state_judge: vdm` instead of `tracking`. Everything else
+#                       (LLM, suites, seeds, ensemble flags) is identical so the A/B is clean.
+#                       benchmark.py flips this key per --arm; no separate file is required.
+#
+# Usage (driven by benchmark.py / run_libero_batch.py):
+#   uv run capx/envs/scripts/run_libero_batch.py \
+#       --base-config-path env_configs/libero/franka_libero_track_judge.yaml ...
+#
+# Single LLM, no ensemble: use_parallel_ensemble + use_multimodel both false (the qwen
+# variant's flags), model = google/gemini-3.1-pro-preview. The VDM (used only by arm A)
+# uses the same Gemini model. record_video: true so the dense per-turn capture the tracker
+# consumes is always produced.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 0
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+      viser_debug: true  # enable per-trial observation history + slider in Viser
+    privileged: false
+    apis:
+      - FrankaLiberoApiReducedSkillLibrary
+    prompt: |
+      You are controlling a Franka Emika robot with API described below.
+      Goal: {libero_environment_goal}
+      You may write python code comments for reasoning but ONLY write the executable Python code and do not write it in code fences.
+      After this code executes, you will be able to get a new observation of the environment and write new code to complete the task if needed.
+      The functions (APIs) below are already imported to the environment. If you want to use numpy, you need to import it explicitly.
+
+    multi_turn_prompt: |
+      The following code blocks were just executed:
+      ```python
+      {executed_code}
+      ```
+      The current console stdout is:
+      ```
+      {console_stdout}
+      ```
+      The current console stderr is:
+      ```
+      {console_stderr}
+      ```
+      If there were no errors during compilation or execution, the console stderr will be empty. If there were errors, consider regenerating the code.
+      Please respond with EXACTLY ONE of the following:
+      - The word 'REGENERATE' followed immediately by new Python code in a fenced code block (```python...```) if you want to modify the code.
+      - The word 'FINISH' if the task appears to be complete
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+output_dir: ./outputs/franka_libero_track_judge
+
+# Single-LLM Gemini: one inference per turn (no self-ensemble), multimodel ensemble off.
+model: google/gemini-3.1-pro-preview
+visual_differencing_model: google/gemini-3.1-pro-preview
+use_img_differencing: true
+use_parallel_ensemble: false
+use_multimodel: false
+
+# Arm switch (Phase-0 seam): tracking = agent-written geometric judge (no VLM).
+# Set to `vdm` for the frozen baseline arm A; benchmark.py overrides this per --arm.
+state_judge: tracking
+
+trials: 50
+num_workers: 10
