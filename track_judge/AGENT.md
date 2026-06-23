@@ -50,6 +50,29 @@ FAILURE of this goal; (b) don't overfit to one runtime model — prefer designs 
 transfer across weak models (Gemini today; sanity-check Qwen3.6 when a generation's gain looks
 model-specific).
 
+## ▶ CURRENT STATE — START HERE (fresh session: read this first)
+**Phase 0 is built, committed, and BOTH arms are smoke-validated end-to-end** (1 task × 1 trial
+each on `libero_object_swap`). Arm A (VDM): `vlm_calls=1/turn`, `judge_s≈10.5s`, task≈641s.
+Arm B (tracking): the agent wrote `judge_state(ctx)`, the harness tracked via TAPIP3D, saved a
+`tracking-viz`, `vlm_calls=0`, `judge_s≈2.5s`, task≈128s. The pipeline + per-step profiling +
+`judge_vs_gt` confusion all work. **No real success numbers yet** (untuned single trials).
+
+**To run (services + commands):**
+1. OpenRouter→Gemini proxy on :8110 — `bash scripts_realbot/openrouter_service/run_openrouter_service.sh`
+   (needs `.openrouterkey`). api_servers (SAM3/GraspNet/PyRoKi) auto-start per run.
+2. Arm B only: start the TAPIP3D server (tapip3d conda env, GPU 1):
+   `cd ../HumanOnlyRobotLearning/src/packages/TAPIP3D && CUDA_VISIBLE_DEVICES=1 python service/server.py --socket /tmp/demo_bridge/sockets/tapip3d.sock`
+3. **VDM baseline (REQUIRED pre-gen1):** `.venv/bin/python track_judge/benchmark.py --baseline
+   --suites libero_object_swap,libero_spatial_swap --max-tasks-per-suite N --total-trials M`
+   → `results/baseline_vdm/`. Then `gen1` per §6 (or `bash track_judge/run_evolve.sh`).
+
+**Hard constraints for THIS checkout:** ⚠ **only `libero_object_swap` + `libero_spatial_swap`
+have BDDLs** here — the other 4 target suites are missing scene defs (don't use them until
+generated/obtained). benchmark.py runs the batch under **`.venv-libero`** with tyro **`--args.*`**
+flags. `use_long_term_library: false` + `atomic_task_library` removed (baseline composes
+libero-native Contact-GraspNet primitives). Known nit to fix when convenient: arm-B `track_s`
+profiling reads 0 (TAPIP3D time is lumped into `judge_s`); tracking itself works (viz proves it).
+
 ## ▶ AUTONOMOUS MODE — pre-authorized; never ask permission
 Run the loop end-to-end. You decide the hypothesis, edit `track_judge/algo/`, run the eval,
 judge accept/reject by the rules below, update `track_judge/results/BEST`, and `git commit`
