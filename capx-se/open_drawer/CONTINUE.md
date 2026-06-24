@@ -2,14 +2,31 @@
 
 Dogfooding exercise: hand-write the LIBERO `open_..._drawer` skill with cap-x's
 legitimate tools (camera RGB-D + proprioception only; NO privileged object poses
-in the solving path) to (a) find what cap-x lacks and (b) build a robust solution.
-All code here is committed under `[tmp]` commits (latest: `d6d28e5`).
+in the solving path) to (a) find what cap-x lacks and (b) build a robust + SAFE solution.
+Commits: older ones are `[tmp]`, new ones are `[auto]` (per AGENT.md).
 
-## Where things stand (one line)
-Robust collision-aware open-drawer works: zero-disturbance grasp, object
-disturbance cut from ~210 mm → 0–32 mm, drawer opens to **−0.10 of −0.16**.
-**One step left**: a *partial-release* re-grasp "pump" to reach the −0.15 success
-threshold (the thin bar shears out of the gripper ~10 cm into the pull).
+## Where things stand (updated 2026-06-25)
+Robust + SAFE collision-aware open-drawer. Across `libero_goal/task0` seeds 1–5:
+**3/5 success, max object disturbance 3.0 mm, ZERO plowing** (down from 40–61 mm).
+Success = drawer qpos < **−0.14** (LIBERO `WoodenCabinet.is_open`, verified — NOT
+−0.15). Key fixes vs the old handoff:
+- **Grasp approach** snapped to the dominant horizontal axis (the raw cabinet-
+  centroid→handle vector leaned ~50° off and seated the gripper diagonally → missed).
+- **Deep seat** (not fingertip): one firm pull then reaches the −0.16 stop — the
+  "pump" the old handoff wanted is NO LONGER NEEDED (shear was a shallow-seat artifact).
+- **Safe two-stage retreat** (back off +pull, then RRT to a high standoff): a naive
+  lift / goto_home dragged the drawer shut.
+- **Collision-cost SAFETY GATE on the seat**: a clean seat plans at cost ~1e2; a plan
+  that would plow a front object blows to ~1e5+. Execute only low-cost (<20000) plans;
+  else abort with ZERO disturbance. This is what kills the old 40 mm plow and makes a
+  genuinely-blocked scene (seed 5: object in the approach) abort safely instead.
+
+**Remaining (next levers — both point at wrist-cam + multi-step, now allowed):**
+1. seed 1 occasionally under-reaches the pull (−0.115): seat-DEPTH variance from the
+   stochastic trajopt → the bar shears. Needs a more reliable deep seat (wrist-cam
+   close-range re-detect + short deterministic approach) or a safe re-grasp-from-above.
+2. seed 5 safe-aborts (object blocks the frontal approach + the +Y pull path): needs a
+   multi-angle approach search or wrist-cam-guided threading, or is safe-unsolvable.
 
 ## Files (all in `capx-se/open_drawer/`, committed)
 - `skill.py` — baseline general skill (cap-x primitives only). Opens the middle
@@ -20,8 +37,9 @@ threshold (the thin bar shears out of the gripper ~10 cm into the pull).
   motion engine). In-process, `.venv-libero`, cap-x Franka, collision world from
   depth point cloud. Fixed T=32 + sphere-pool N=96 ⇒ compiles ONCE (~2 min), then
   ~0.6 s/solve. `.plan()` = RRT+trajopt; `.plan_trajopt()` = soft collision-aware.
-- `robust_skill.py` — `solve_robust()`: RRT→clear standoff → trajopt final segment
-  (zero-disturbance grasp) → collision-aware pull. **This is the robust deliverable.**
+- `robust_skill.py` — `solve_robust()`: RRT→standoff→pre-grasp → cost-gated trajopt
+  seat (closed-loop grip verify + retry) → one firm pull → safe two-stage retreat.
+  **This is the robust + safe deliverable.** Needs `set_gripper` (new API primitive).
 - `run_robust.py` — runs `robust_skill` end-to-end + measures object disturbance.
 - `GAPS.md` (per-bug cap-x gaps) · `DISCUSSION.md` (framework gaps + §9 robustness,
   §10 the planner integration & the exact remaining tuning).

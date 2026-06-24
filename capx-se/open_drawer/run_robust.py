@@ -57,7 +57,17 @@ def main():
     p0 = {o: sim.data.xpos[sim.model.body_name2id(o)].copy() for o in objs}
 
     print(f"instruction: {env.handle.task_language!r}", flush=True)
-    rs.solve_robust(api.functions(), instruction=env.handle.task_language)
+
+    # MEASUREMENT-ONLY ground-truth probe (drawer qpos + EE) for tuning the pump.
+    qadr = sim.model.get_joint_qpos_addr("wooden_cabinet_1_middle_level")
+    fns = api.functions()
+
+    def _dbg(tag):
+        q = float(sim.data.qpos[qadr])
+        ee = fns["get_observation"]()["robot_cartesian_pos"][:3]
+        print(f"  [gt] {tag:<10} drawer_qpos={q:+.4f}  ee={np.round(ee, 3)}", flush=True)
+
+    rs.solve_robust(fns, instruction=env.handle.task_language, debug=_dbg)
 
     disp = {o.split("_1")[0]: round(float(np.linalg.norm(
         sim.data.xpos[sim.model.body_name2id(o)] - p0[o])) * 1000, 1) for o in objs}

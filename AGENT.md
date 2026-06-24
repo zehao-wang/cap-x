@@ -1,56 +1,56 @@
 # Coding Expectation —— 每日开工须知
 
-> 每次开始任务先读这份。它告诉你：环境怎么用、去哪看进度、按什么风格和流程推进。
+> 每次开始任务先读这份。它告诉你：我们在做什么、开工先问什么、按什么规则和风格推进。
 
-## 0. 我们在做什么（一句话）
+## 0. 我们在做什么（self-evolve 的当前形态）
 
-在 cap-x agent0 之上做 **self-evolve**：把*人确认成功*的交互，经「通用化 → 蒸馏 → 候选 →
-benchmark 自动验证 → 人批准」闭环，固化成**可验证、需人批准、可终身更新**的长期能力。
-**设计真相在 `docs-se/`**（先读 `docs-se/README.md`）；**任务总账在 `GOAL.md`**。
+在 cap-x 之上做 **self-evolve**。当前阶段用 **dogfooding** 的方式推进：**亲手用 cap-x 暴露的
+service / skill + 环境里可用的包，为 LIBERO PRO 的某个 task 编写一套能解决问题的代码**，借此
+**发现 cap-x 缺什么**（缺的权限 / service，以及缺的 skill）。产物沉淀在 `capx-se/<task>/`
+（每个 task 一个目录：解法代码 + runner + `GAPS.md` / `DISCUSSION.md` / `CONTINUE.md` 续接手记）。
 
-## 1. ENV
+## 1. 开工第一步：问我这次探索哪个 task
 
-- 整个 codebase 建立在 `.venv/bin/python` 环境上；部分依赖 `.venv-libero/bin/python`。
+每次开始，先问用户「这次用哪个 task 来探索？」并列出候选（至少包含已有的）：
+- **`open_drawer`** —— 当前主力探索任务（`capx-se/open_drawer/`，先读其 `CONTINUE.md`）。
+- 之后可能新增其它 LIBERO PRO task。
+
+用户选定后，进对应 `capx-se/<task>/` 目录，先读该目录的 `CONTINUE.md`（续接现状）再动手。
+
+## 2. 硬性要求（不可违反）
+
+- **解题路径不准读 simulator 特权状态**：物体/关节真值这种真机拿不到的，一律用 **sensing 估计**
+  （agentview / wrist RGB-D + proprioception）。特权读取**只允许**在 runner 里做测量/打分，
+  **绝不**进解法。
+- **success 必要但不充分，还必须 SAFE**：不仅要过 benchmark 判定，还**不能碰撞/扰动其它物体**；
+  runner 要同时报告 task success **和** 物体扰动量。**安全优先于成功** —— 宁可安全地失败，
+  也不要不安全地“成功”（不要硬闯）。
+- **不准 overfitting 单个 task / 单个 seed**：要通用解法 —— 闭环依赖感知反馈，别堆针对单场景
+  调出来的魔数；要跨 seed / 场景鲁棒。
+- **允许且鼓励多步交互**：先执行一段 → 观察当前环境状态 → 再写/跑下一段（闭环，而非一次性开环
+  脚本）。**wrist（eye-in-hand）相机可用** —— 到 pre-grasp 后用它做近距离重检测（agentview 单独
+  太粗，不足以稳定 seat）。
+- **代码组织**：结构清晰、模块化但不过度模块化；**单文件不超过 500 行**；可多文件、不限一个。
+
+## 3. ENV / 硬件
+
+- 主环境 `.venv/bin/python`；部分依赖 `.venv-libero/bin/python`（LIBERO / 运动规划走这个）。
 - web-ui 构建用 `~/.capx_nodeenv`。
+- 机器有 **2×50GB GPU + 大内存**：可随意起多个 service（SAM3 / graspnet / pyroki 等），
+  只要能解决问题，任何模型都可以试。常用：SAM3 `:8114`、graspnet `:8115`、pyroki `:8116`。
+- 跑 LIBERO 一般要 `MUJOCO_GL=egl HF_HUB_OFFLINE=1`。
 
-## 2. 获知当前进度 → 选定本次任务
+## 4. 流程性要求
 
-1. 读 **`GOAL.md`** —— 完整期待 + Pipeline 状态（哪些 ✅ / 哪些 🟡 / 哪些 🔲 / backlog）。挑出本次要推进的：
-   优先 🔲（还没动的模块）；没有 🔲 时推进 **🟡 模块剩余的 live-gated 接线**（核心逻辑+单测已 done，
-   只差接到真实 sim / web / gh 上跑通的那截）。
-2. 读该模块对应的 **`docs-se/0X-*.md`**（先过一遍 `concepts.md` + `storage.md` 的术语与数据契约）。
-3. 把这次的计划拆成可执行步骤写进 **`Short-Term-GOAL.md`**（临时 memory），分模块 coding。
-4. 收尾 / 完成判据：
-   - **🔲 模块**：核心逻辑写完 + 单测通过即可标 ✅。
-   - **🟡 的 live-gated 接线**：没法纯单测，必须在真实环境里跑通一次才算完成 —— 例如
-     ③ 真跑通一次「人确认成功」的 web trial 并落出成对 `.json`+`.digest.md`；⑤ 在有 `gh` 的环境真开出一个含
-     promote/abandon 改动的 PR；⑥ cron 在设定时刻真触发一次 Evaluator。环境暂不具备时，在 `GOAL.md`
-     备注里写清"卡在哪个外部依赖"，保持 🟡 而非误标 ✅。
-   - `Short-Term-GOAL.md` 完成项随手标记；整块做完 → 清空它，并在 `GOAL.md` 对应行标 ✅。
+1. **自动修改**：直接动手，不用每步确认。
+2. **逐轮 debug 和验证**：拿不到特权信号就靠 sensing + runner 里的 ground-truth 测量来对照调试。
+3. **每个验证通过的功能就 commit 落锚**（context 压缩 / session 切换后能从最近 commit 干净续上）。
+   commit message **开头带 `[auto]`**（旧的用 `[tmp]`，历史 commit 不动）；**不**加 Co-Authored-By、**不**把 Claude 列为 contributor。
+4. **随手保持 `capx-se/<task>/CONTINUE.md` 可接续**：每推进一步就更新「这次改了什么 / 还想改什么 /
+   怎么跑」。中断在哪都能无缝续上。
 
-## 3. 待实现系统（cap-x-se）的设计硬约束
+## 5. 路标
 
-> 这些是**我们要实现的 cap-x-se agent 在运行时必须满足**的流程/设计约束（来自 `docs-se`）。
-> **不是**对"我在本仓库编辑、commit 代码"的限制 —— 本仓库照常正常编辑、正常 commit。
-
-- **success signal 只能由人给**：cap-x-se 的 live loop 不让 VDM 判成功；VDM 只服务 Benchmark Evaluator 的自动评测。
-- **更新长期 library 走 PR**：cap-x-se 与人在 manipulation task 交互后、要更新 library 时，**以 Pull Request 形式提交改动等人 merge**（而非弹聊天框确认）；它自己绝不直接改长期库 / 删候选。
-- **遗弃不记 negative**；术语统一用 **atomic task library**（不绑具体物体/任务）。
-- **固化路径**：长期库进 `capx/skill_library/`、`capx/atomic_task_library/`，**不**直接改 `capx/skills/library.py`；pool 在仓库根 `mem/`。
-
-## 4. 代码风格
-
-1. 结构清晰，不过度兜底。
-2. 模块化又不过度模块化，单文件不超过 500 行。
-
-## 5. 流程性要求
-
-1. **自动修改**（直接动手，不用每步确认）。
-2. **逐轮 debug 和验证**。
-3. **每个验证通过的功能实现都 commit**：一旦某块功能改完、验证暂无明显 bug，就立刻 commit 落锚 ——
-   这样中断（context 压缩 / session 切换）后也不会丢失追踪，能从最近一个 commit 干净续上。
-   commit message **开头带 `[tmp]`**，便于区分我后续的改进与你维护的 commit；
-   commit **不**加 Co-Authored-By、不把 Claude 列为 contributor。
-4. **随手保持 `Short-Term-GOAL.md` 可接续**：每推进一步就把「这次改了什么 / 还想改什么」更新进去。
-   我们拿不到 usage limit，靠 harness 在中断（context 压缩 / session 切换）后接着干 —— 只要
-   `Short-Term-GOAL.md` 始终是最新的可执行进度，中断在哪都能无缝续上。
+- **当前任务续接**：`capx-se/<task>/CONTINUE.md`
+- **该任务发现的 cap-x 缺口**：`capx-se/<task>/GAPS.md`、`DISCUSSION.md`
+- 历史背景（旧 self-evolve pipeline 设计，可能部分仍参考）：`docs-se/`、`GOAL.md`（已逐步过时，以本文件为准）。

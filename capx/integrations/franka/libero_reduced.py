@@ -102,6 +102,7 @@ class FrankaLiberoApiReduced(ApiBase):
         fns["move_to_joints"] = self.move_to_joints
         fns["open_gripper"] = self.open_gripper
         fns["close_gripper"] = self.close_gripper
+        fns["set_gripper"] = self.set_gripper
         fns["goto_pose"] = self.goto_pose
 
         fns["goto_home_joint_position"] = self.goto_home_joint_position
@@ -459,6 +460,22 @@ class FrankaLiberoApiReduced(ApiBase):
             None
         """
         _close_gripper(self._env, steps=30)
+
+    def set_gripper(self, fraction: float, steps: int = 30) -> None:
+        """Drive the gripper to a partial opening and hold it there.
+
+        ``open_gripper``/``close_gripper`` only command the two extremes. A partial
+        opening is needed to *re-seat* a grip without dropping a held object — e.g.
+        a thin drawer handle that shears out of a fully-closed grip mid-pull: open
+        just enough to slide along the bar, re-seat, then re-close.
+
+        Args:
+            fraction: 0.0 (fully closed) to 1.0 (fully open).
+            steps: simulation steps to settle the commanded opening (default 30).
+        """
+        self._env._set_gripper(float(np.clip(fraction, 0.0, 1.0)))
+        for _ in range(int(steps)):
+            self._env._step_once()
 
     def goto_pose(
         self,

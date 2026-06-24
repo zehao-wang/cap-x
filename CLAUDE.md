@@ -6,23 +6,22 @@
 ## 开工流程（详见 `AGENT.md`）
 
 1. 读 `AGENT.md`（开工须知）。
-2. 读 `GOAL.md` → 看「Pipeline 状态」挑本次要推进的 🔲 模块。
-3. 读该模块对应的 `docs-se/0X-*.md`（先过 `concepts.md` + `storage.md` 的术语 + 数据契约）。
-4. 把本次计划拆成步骤写进 `Short-Term-GOAL.md`（临时暂存），分模块 coding。
-5. 模块做完 → 在 `GOAL.md` 对应行标 ✅、清空 `Short-Term-GOAL.md`。
+2. **问用户这次用哪个 task 探索**（当前主力：`open_drawer`）。
+3. 进 `capx-se/<task>/`，先读其 `CONTINUE.md`（续接现状）再动手。
+4. 按 `AGENT.md` 的硬性要求 coding（不读特权状态 / success+安全 / 不 overfit / 可多步 + wrist cam / 单文件<500 行）。
+5. 验证通过就 `[tmp]` commit 落锚，并随手更新 `capx-se/<task>/CONTINUE.md`。
 
 ## 路标
 
 - **开工须知**：`AGENT.md`
-- **进度总账 / 任务分解**：`GOAL.md`
-- **设计真相**：`docs-se/`（先 `README.md`）
-- **本次任务暂存**：`Short-Term-GOAL.md`
-- **暂缓候选**：`TASK_TMP_ASIDE.md`
+- **当前任务续接**：`capx-se/<task>/CONTINUE.md`
+- **该任务发现的 cap-x 缺口**：`capx-se/<task>/GAPS.md`、`DISCUSSION.md`
+- 历史背景（旧 self-evolve pipeline，已逐步过时）：`GOAL.md`、`docs-se/`、`Short-Term-GOAL.md`
 
-## 不可违反的硬约束（细节见 `AGENT.md` §3 / `GOAL.md` §1）
+## 不可违反的硬约束（细节见 `AGENT.md`）
 
-- **success 只能由人给**：cap-x-se 的 live loop 不让 VDM 判成功。
-- **更新长期 library 走 PR**：等用户 merge（批准）/ close（否决），绝不直接改长期库 / 删候选。
-- **遗弃不记 negative**；术语统一 **atomic task library**。
-- **固化路径**：`capx/skill_library/`、`capx/atomic_task_library/`；不直接改 `capx/skills/library.py`；pool 在仓库根 `mem/`。
-- **commit**：message 开头带 `[tmp]`；不加 Co-Authored-By、不列 Claude 为 contributor。
+- **解题路径不读 simulator 特权状态**：真机拿不到的（物体/关节真值）一律用 sensing 估计；特权读取只在 runner 测量。
+- **success 必要但不充分，必须 SAFE**：不碰撞/扰动其它物体；安全优先于成功，不硬闯。
+- **不 overfit 单 task/seed**：通用解法、闭环依赖感知反馈。
+- **commit**：message 开头带 `[auto]`（旧的 `[tmp]` 历史 commit 不动）；不加 Co-Authored-By、不列 Claude 为 contributor。
+- （eventual cap-x-se runtime 的设计北极星，仍参考）：success 只能由人给；更新长期 library 走 PR；术语 **atomic task library**；固化路径 `capx/skill_library/`、`capx/atomic_task_library/`。
