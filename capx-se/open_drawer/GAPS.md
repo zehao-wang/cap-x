@@ -128,6 +128,19 @@ to recover the true axis. Good candidates for the atomic-task library:
 
 ---
 
+## VALIDATION: full success on a reachable drawer scenario
+
+`libero_goal` task 0 (`open_the_middle_drawer_of_the_cabinet`, the NON-perturbed
+suite where instruction == goal == middle region): the general skill opens it
+**end-to-end, `check_success()=True`, 3/3 seeds (1,2,3)**. Perception-only:
+detect 3 handles → pick "middle" from the instruction → estimate axis from
+cabinet→handle → probe-refine to +Y → CuRobo reach + deep grasp (gripper holds)
+→ pull middle qpos 0 → −0.16. No scene-specific constants; handle positions and
+the refined axis vary per seed.
+
+The bottom drawer (`libero_goal_task`) remains blocked by the reach/control
+limits below (to be revisited with AnyGrasp + possibly compliant control).
+
 ## What actually happened on the sim (evidence)
 
 - **Pipeline validated** on the reachable **middle** drawer: CuRobo collision-off

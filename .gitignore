@@ -59,4 +59,4 @@ check.md
 #       accumulates stats.json there). Long-term library = capx/ code via PR.
 /mem/*
 !/mem/func_candidate_pool/
-logs
+logscapx/third_party/anygrasp_sdk/
