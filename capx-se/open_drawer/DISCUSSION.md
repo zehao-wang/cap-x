@@ -126,6 +126,33 @@ what a modern grasp model like AnyGrasp + a real collision world would give);
 (d) report object-disturbance as a first-class eval metric alongside
 `check_success` so "robust" is measured, not assumed.
 
+### 10. Robust planner integrated: HORL RRT+trajopt (collision-aware, attach)
+Wired HORL's `motion_plan` pyroki solver into cap-x (`horl_planner.py`): runs
+in-process in `.venv-libero`, robot = cap-x Franka (curobo URDF + pyroki
+`panda_spheres.json`), **collision world built from the agentview depth point
+cloud**. Fixed horizon T=32 + fixed sphere-pool N=96 => the JAX kernels **compile
+once** (~2 min), then **~0.6 s/solve** with arbitrary obstacle positions/counts.
+
+Approach (per the "sample a standoff + re-plan the last segment" idea):
+1. **RRT (OMPL RRTConnect) -> a point-cloud-verified CLEAR standoff** in front of
+   the handle: `ompl_status='Exact solution'`, **zero object disturbance**.
+   (RRT to the *grasp* goal itself fails `goal-ompl-invalid` because the goal sits
+   in the obstacle margin — hence the standoff.)
+2. **Re-plan the short final segment** standoff->handle: collision-aware trajopt
+   gives a **zero-disturbance grasp** (all objects 0.0 mm). pyroki straight IK
+   reaches a firmer grasp but grazes the plate ~20 mm.
+3. **Pull**: a straight +Y pull opens the drawer (gripper at z=0.11 clears the
+   z~0 plate); a collision-aware pull is over-conservative (avoids the plate
+   region the drawer must open into -> doesn't open).
+
+Best end-to-end (RRT standoff + pyroki final + straight pull): **success=True,
+drawer fully open (-0.16)**, disturbance **bowl 4 mm / cheese 6 mm / bottle 0 /
+plate 56 mm** — vs the naive collision-OFF skill's **bowl ~210 / cheese ~100 /
+plate ~40 mm**. Remaining: the plate (final-approach + pull arm-graze) and the
+trajopt-grasp firmness (zero-disturbance but parks slightly shallow -> pull slips)
+are the tuning frontier. cap-x gap closed: it now HAS a working collision-aware,
+compile-once, attach-capable motion planner driven by the depth point cloud.
+
 ## Bottom line
 The perception + planning *ingredients* are good, but they're not assembled into
 a reliable, observable, eval-consistent control loop. The highest-leverage fixes
