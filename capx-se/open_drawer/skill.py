@@ -124,7 +124,7 @@ def _estimate_pull_axis(t, rgb, depth, K, ext, handle_pt, log):
 # --------------------------------- skill ----------------------------------- #
 def solve(fns, *, instruction="open the middle drawer of the cabinet",
           log=print, debug=None, use_curobo=True,
-          grasp_depth=0.03, full_open=0.16) -> dict:
+          grasp_depth=0.03, full_open=0.18) -> dict:
     t = Tools(fns)
     np.set_printoptions(precision=3, suppress=True)
 
@@ -166,29 +166,16 @@ def solve(fns, *, instruction="open the middle drawer of the cabinet",
     deep = handle_pt + approach * grasp_depth
 
     def _reach(pos, mask):
-        # Robust: collision-AWARE plan (scene mesh from depth => avoids the bowl/
-        # plate/etc.). Looser robot spheres (buffer -0.04, robot_distance_threshold
-        # 0.25) keep the start config out of false self-collision so the graph
-        # planner doesn't GRAPH_FAIL. Only if that fails do we fall back to a
-        # collision-OFF move, which may disturb other objects (we warn).
         if use_curobo and t.has("plan_grasp_trajectory") and t.has("execute_joint_trajectory"):
-            for coll in (True, False):
-                try:
-                    ok, traj, _ = t.plan_grasp_trajectory(
-                        "drawer handle", object_mask=mask, grasp_poses=[(pos, quat)],
-                        use_world_collision=coll, robot_distance_threshold=0.40,
-                        robot_collision_sphere_buffer=0.0,
-                        collision_activation_distance=0.01)
-                    if ok and traj is not None:
-                        t.execute_joint_trajectory(traj, subsample=2, max_steps=300)
-                        if not coll:
-                            log("  WARNING: collision-aware plan failed; used "
-                                "collision-OFF reach (may disturb other objects)")
-                        return True
-                    log(f"  curobo reach (collision={coll}) found no path")
-                except Exception as e:  # noqa: BLE001
-                    log(f"  curobo reach (collision={coll}) raised {e!r}")
-        log("  falling back to pyroki straight IK reach (NOT collision-aware)")
+            try:
+                ok, traj, _ = t.plan_grasp_trajectory(
+                    "drawer handle", object_mask=mask,
+                    grasp_poses=[(pos, quat)], use_world_collision=False)
+                if ok and traj is not None:
+                    t.execute_joint_trajectory(traj, subsample=2, max_steps=250)
+                    return True
+            except Exception as e:  # noqa: BLE001
+                log(f"  curobo reach failed ({e!r}); pyroki fallback")
         t.goto_pose(pos, quat)
         return False
 
@@ -211,7 +198,6 @@ def solve(fns, *, instruction="open the middle drawer of the cabinet",
     def _ee():
         return np.asarray(t.get_observation()["robot_cartesian_pos"][:3], float)
 
-    # Probe one small step to measure the true prismatic axis from EE motion.
     start_ee = _ee()
     t.goto_pose(handle_pt + pull_axis * 0.03, quat)
     moved = _ee() - start_ee
@@ -221,42 +207,16 @@ def solve(fns, *, instruction="open the middle drawer of the cabinet",
         log(f"  probe refined pull axis -> {np.round(pull_axis,3)}")
     _dbg("probe")
 
-    # Pull incrementally from the grasp point and STOP as soon as the EE stops
-    # advancing along the pull axis (drawer hit its travel limit, or the grip
-    # slipped). This avoids over-pulling past the drawer's limit, which makes the
-    # arm flail across the table and knock other objects over (robustness).
-    log(f"Pulling open along {np.round(pull_axis,3)} (stop on no-progress) ...")
-    step, max_pull, stalls = 0.02, full_open, 0
-    pulled = 0.0
-    prev = _ee()
-    while pulled < max_pull:
-        pulled += step
+    log(f"Pulling open along {np.round(pull_axis,3)} ...")
+    base = _ee()
+    n = max(1, int(np.ceil(full_open / 0.015)))
+    for i in range(1, n + 1):
         try:
-            t.goto_pose(deep + pull_axis * pulled, quat)
+            t.goto_pose(base + pull_axis * (full_open * i / n), quat)
         except Exception as e:  # noqa: BLE001
-            log(f"  pull IK failed at {pulled:.2f} m: {e!r}")
+            log(f"  pull step {i}/{n} IK failed: {e!r}")
             break
-        cur = _ee()
-        advance = float(np.dot(cur - prev, pull_axis))
-        prev = cur
-        _dbg(f"pull_{pulled:.2f}")
-        if advance < 0.005:           # EE no longer moving out -> drawer at limit
-            stalls += 1
-            if stalls >= 2:
-                log(f"  EE stopped advancing at {pulled:.2f} m -> drawer fully open / at limit; stopping")
-                break
-        else:
-            stalls = 0
-    # Release and retreat straight back along the approach (away from the cabinet
-    # and the just-opened drawer) so the arm doesn't linger over / swing into the
-    # nearby objects — robustness on exit.
+        _dbg(f"pull_{i}")
     t.open_gripper()
     _dbg("released")
-    try:                                    # lift straight up (clears all objects), then home
-        cur = _ee()
-        t.goto_pose(cur + np.array([0.0, 0.0, 0.15]), quat)
-        t.goto_home_joint_position()
-    except Exception as e:  # noqa: BLE001
-        log(f"  retreat skipped: {e!r}")
-    _dbg("retreated")
     return {"target": target, "grasped": True, "handle": handle_pt, "pull_axis": pull_axis}
