@@ -134,10 +134,6 @@ class BatchLaunchArgs:
     """List of paths to the YAML configuration files to run sequentially."""
 
     # Overrides (mirrored from LaunchArgs to allow global overrides)
-    # server_url: str = "http://0.0.0.0:8009/v1/responses"  # local server for running codex models
-    server_url: str = "http://127.0.0.1:8110/chat/completions"  # local server 
-
-
     models: list[str] = field(
         default_factory=lambda: [
             # "nvidia/openai/gpt-oss-120b", # Open source models
@@ -200,8 +196,9 @@ class BatchLaunchArgs:
 
     # Visual differencing model (used when use_img_differencing/use_video_differencing is on).
     # Defaults of None mean "use whatever the YAML / LaunchArgs default specifies".
+    # Its endpoint is resolved by the harness from the model name (qwen lane ->
+    # CAPX_QWEN_URL, etc.), so there is no server-url override here.
     visual_differencing_model: str | None = None
-    visual_differencing_model_server_url: str | None = None
     visual_differencing_model_api_key: str | None = None
 
 
@@ -243,7 +240,6 @@ def main(args: BatchLaunchArgs) -> None:
                 # Create LaunchArgs with the current config_path and global overrides
                 launch_kwargs = dict(
                     config_path=config_path,
-                    server_url=args.server_url,
                     model=model,
                     temperature=args.temperature,
                     max_tokens=args.max_tokens,
@@ -261,8 +257,6 @@ def main(args: BatchLaunchArgs) -> None:
                 )
                 if args.visual_differencing_model is not None:
                     launch_kwargs["visual_differencing_model"] = args.visual_differencing_model
-                if args.visual_differencing_model_server_url is not None:
-                    launch_kwargs["visual_differencing_model_server_url"] = args.visual_differencing_model_server_url
                 if args.visual_differencing_model_api_key is not None:
                     launch_kwargs["visual_differencing_model_api_key"] = args.visual_differencing_model_api_key
                 launch_args = LaunchArgs(**launch_kwargs)
