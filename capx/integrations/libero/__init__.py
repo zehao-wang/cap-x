@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,16 +27,24 @@ class LiberoHandle:
         return obs, float(reward), bool(done), info
 
 
-def _extract_language_from_bddl(bddl_path: str) -> str | None:
+def _read_bddl_language(bddl_file_path: str) -> str | None:
+    """Extract the ``(:language ...)`` instruction from a BDDL file.
+
+    This is the instruction that matches the file's ``(:goal ...)`` predicate
+    (both are perturbed together in LIBERO-PRO ``_task`` variants), unlike the
+    suite metadata language. Returns None if the file/clause is missing.
+    """
     try:
-        with open(bddl_path, "r") as f:
-            content = f.read()
-        match = re.search(r"\(:language\s+(.*?)\)", content, re.DOTALL | re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-    except Exception as e:
-        print(f"Warning: Could not extract language from {bddl_path}: {e}")
-    return None
+        with open(bddl_file_path, "r") as f:
+            text = f.read()
+    except OSError:
+        return None
+    import re
+
+    m = re.search(r"\(:language\s+(.*?)\)", text, flags=re.DOTALL)
+    if not m:
+        return None
+    return " ".join(m.group(1).split())
 
 
 def load_libero_task(
@@ -109,10 +116,26 @@ def load_libero_task(
     env = OffScreenRenderEnv(**env_args)
     env.seed(0)
 
-    # Try to extract language from BDDL file directly
-    task_language = _extract_language_from_bddl(bddl_file_path)
+    # Instruction must come from the SAME source as the scored goal predicate -
+    # the BDDL file.  LIBERO-PRO "_task" variants perturb BOTH the BDDL :language
+    # AND the (:goal ...) predicate together (e.g. the file named
+    # open_the_middle_drawer_of_the_cabinet.bddl actually scores opening the
+    # *bottom* region and its :language says "open the bottom drawer").  The
+    # suite metadata (task.language) is NOT perturbed, so using it makes the
+    # agent's instruction contradict what check_success() rewards.  We therefore
+    # prefer the BDDL :language and only fall back to suite metadata if absent.
+    bddl_language = _read_bddl_language(bddl_file_path)
+    task_language = bddl_language or task.language
     if not task_language:
-        task_language = task.language
+        raise ValueError(
+            f"LIBERO has no language for suite={suite_name!r}, task_id={task_id}"
+        )
+    if bddl_language and task.language and bddl_language.strip().lower() != task.language.strip().lower():
+        print(
+            f"[load_libero_task] WARNING: instruction/goal source mismatch for "
+            f"{suite_name}/task{task_id}: BDDL :language={bddl_language!r} (matches "
+            f"the scored goal) vs suite metadata={task.language!r}. Using BDDL."
+        )
 
     # Handle init states path resolution
     # Libero's get_task_init_states uses get_libero_path("init_states") internally

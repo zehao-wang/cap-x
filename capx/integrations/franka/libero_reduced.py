@@ -108,11 +108,12 @@ class FrankaLiberoApiReduced(ApiBase):
         fns["subsample_point_cloud"] = self.subsample_point_cloud
         fns["filter_noise"] = self.filter_noise
 
-        # # CuRobo, uncomment these for the coding agent to use them!
-        # fns["parse_grasp_poses_for_curobo"] = self.parse_grasp_poses_for_curobo
-        # fns["plan_grasp_trajectory"] = self.plan_grasp_trajectory
-        # fns["plan_with_grasped_object"] = self.plan_with_grasped_object
-        # fns["execute_joint_trajectory"] = self.execute_joint_trajectory
+        # CuRobo collision-aware planning (now wired: get_ee_pose exists on the class).
+        fns["get_ee_pose"] = self.get_ee_pose
+        fns["parse_grasp_poses_for_curobo"] = self.parse_grasp_poses_for_curobo
+        fns["plan_grasp_trajectory"] = self.plan_grasp_trajectory
+        fns["plan_with_grasped_object"] = self.plan_with_grasped_object
+        fns["execute_joint_trajectory"] = self.execute_joint_trajectory
         return fns
 
 
@@ -491,6 +492,21 @@ class FrankaLiberoApiReduced(ApiBase):
         joints = self.solve_ik(pos, quat)
         self.move_to_joints(joints)
     
+    def get_ee_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """Current end-effector pose in the robot base frame.
+
+        Returns:
+            position: (3,) XYZ of panda_hand in the base frame.
+            quaternion_wxyz: (4,) [w, x, y, z] orientation in the base frame.
+
+        Reads proprioception only (``robot_cartesian_pos``) — available on the real
+        robot too, so it is a legitimate input. Needed by the CuRobo world builders
+        (``update_curobo_world_with_object`` / ``plan_with_grasped_object``), which
+        previously referenced this method without it being defined on the class.
+        """
+        cart = np.asarray(self._env.get_observation()["robot_cartesian_pos"], dtype=np.float64)
+        return cart[:3].copy(), cart[3:7].copy()
+
     def goto_home_joint_position(self) -> None:
         """Return the arm to its reset joint configuration with high manipulability"""
         home = getattr(self._env, "home_joint_position", None)
