@@ -25,17 +25,15 @@ from capx.envs.configs.loader import DictLoader
 
 # Re-export LLM client symbols for backward compatibility
 from capx.llm.client import (  # noqa: F401
-    CLAUDE_MODELS,
     ENSEMBLE_CONFIGS,
-    GPT_MODELS,
-    OPENROUTER_MODELS,
-    OPENROUTER_SERVER_URL,
-    OSS_MODELS,
     VLM_MODELS,
     ModelQueryArgs,
     _completions_to_responses_convert_prompt,
+    build_payload,
     collapse_text_image_inputs,
     is_openrouter_model,
+    lane_server_url,
+    resolve_lane,
     query_model as _query_model,
     query_model_streaming as _query_model_streaming,
     query_model_ensemble as _query_model_ensemble,

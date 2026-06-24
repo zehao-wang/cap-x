@@ -25,11 +25,42 @@ if TYPE_CHECKING:
 # Model constants
 # ---------------------------------------------------------------------------
 
-GPT_MODELS = [
-    "openai/gpt-5.4",
-    "openai/o4-mini",
-]
+# ---------------------------------------------------------------------------
+# Backend routing
+#
+# The user only ever sets `model`.  The harness maps that name to one of three
+# backend "lanes" and fills in the endpoint + request shape itself, so callers
+# never touch a server URL:
+#
+#     gpt-5.5      -> "codex"       local Codex CLI subscription proxy
+#     Qwen3.6-27B  -> "qwen"        local Qwen vLLM server
+#     (anything)   -> "openrouter"  OpenRouter proxy  [default]
+#
+# Per-lane endpoints come from an env var (so deployments retarget a port
+# without code edits) and fall back to a built-in default.  ``server_url`` on
+# LaunchArgs/ModelQueryArgs is kept for backward compatibility but no longer
+# drives routing — the model name does.
+# ---------------------------------------------------------------------------
+
+CODEX_MODELS = {"gpt-5.5"}
+QWEN_LOCAL_MODELS = {"Qwen3.6-27B", "qwen3.6"}
+
+_LANE_DEFAULT_URL = {
+    "codex": "http://127.0.0.1:8110/chat/completions",
+    "qwen": "http://127.0.0.1:8000/v1/chat/completions",
+    "openrouter": "http://127.0.0.1:8110/chat/completions",
+}
+_LANE_URL_ENV = {
+    "codex": "CAPX_CODEX_URL",
+    "qwen": "CAPX_QWEN_URL",
+    "openrouter": "CAPX_OPENROUTER_URL",
+}
+
+# Vision-capable models: gates whether a trial may send images / use the visual
+# differencing model.  This is a capability set, orthogonal to routing.
 VLM_MODELS = [
+    "gpt-5.5",
+    "Qwen3.6-27B",
     "google/gemini-3.1-pro-preview",
     "google/gemini-2.5-flash-lite",
     "anthropic/claude-opus-4-5",
@@ -38,33 +69,75 @@ VLM_MODELS = [
     "openai/o1",
     "openai/o4-mini",
     "deepseek/deepseek-v3.2",
-    "deepseek/deepseek-r1-0528",
-    "deepseek/deepseek-r1",
-    "qwen/qwen3.5-122b-a10b",
-    "moonshotai/kimi-k2",
-    "Qwen3.6-27B",
 ]
-CLAUDE_MODELS = ["anthropic/claude-opus-4-5", "anthropic/claude-haiku-4-5"]
-OSS_MODELS = [
-    "deepseek/deepseek-v3.2",
-    "deepseek/deepseek-r1-0528",
-    "deepseek/deepseek-r1",
-    "qwen/qwen3.5-122b-a10b",
-    "moonshotai/kimi-k2",
-]
-OPENROUTER_MODELS = [
-    "openrouter/google/gemini-2.5-pro-preview",
-    "openrouter/google/gemini-2.5-flash-preview",
-    "openrouter/anthropic/claude-sonnet-4",
-    "openrouter/anthropic/claude-opus-4",
-    "openrouter/deepseek/deepseek-r1",
-    "openrouter/deepseek/deepseek-chat-v3-0324",
-    "openrouter/openai/gpt-4.1",
-    "openrouter/openai/o4-mini",
-    "openrouter/meta-llama/llama-4-maverick",
-    "openrouter/qwen/qwen3-235b-a22b",
-]
-OPENROUTER_SERVER_URL = "http://localhost:8110/chat/completions"
+
+
+def resolve_lane(model: str) -> str:
+    """Map a user-facing model name to its backend lane."""
+    if model in CODEX_MODELS:
+        return "codex"
+    if model in QWEN_LOCAL_MODELS:
+        return "qwen"
+    return "openrouter"
+
+
+def lane_server_url(lane: str) -> str:
+    """Resolve a lane's endpoint: ``CAPX_<LANE>_URL`` env var, else default."""
+    return os.getenv(_LANE_URL_ENV[lane], _LANE_DEFAULT_URL[lane])
+
+
+def build_payload(
+    lane: str,
+    model: str,
+    args: "LaunchArgs | ModelQueryArgs",
+    prompt: list[dict],
+    *,
+    stream: bool = False,
+) -> dict:
+    """Build the request body for a lane.
+
+    The Codex proxy forces its own reasoning effort server-side and ignores
+    sampling temperature, so it only needs the messages and a completion-token
+    budget.  The Qwen vLLM and OpenRouter proxies both take the plain OpenAI
+    chat-completions shape.
+    """
+    if lane == "codex":
+        payload: dict = {
+            "model": model,
+            "messages": prompt,
+            "max_completion_tokens": args.max_tokens,
+        }
+    else:
+        payload = {
+            "model": model,
+            "messages": prompt,
+            "temperature": args.temperature,
+            "max_tokens": args.max_tokens,
+        }
+    if stream:
+        payload["stream"] = True
+    return payload
+
+# The trial runner sets this before making LLM calls.  Local compatibility
+# proxies can use it to persist a per-call audit trail; ordinary OpenAI and
+# OpenRouter endpoints safely ignore these extra request fields.
+_LLM_LOG_CONTEXT: dict[str, str | int | None] = {"dir": None, "turn": None}
+
+
+def set_llm_log_context(log_dir: str | None, turn: int | str | None = None) -> None:
+    """Associate subsequent local-proxy calls with one cap-x trial output directory."""
+    _LLM_LOG_CONTEXT["dir"] = log_dir
+    _LLM_LOG_CONTEXT["turn"] = turn
+
+
+def set_llm_log_turn(turn: int | str | None) -> None:
+    """Update the turn label without changing the current trial log directory."""
+    _LLM_LOG_CONTEXT["turn"] = turn
+
+
+def _is_local_compat_proxy(server_url: str) -> bool:
+    """Whether a server is the local :8110 proxy that understands cap-x metadata."""
+    return server_url.startswith(("http://localhost:8110/", "http://127.0.0.1:8110/"))
 
 # ---------------------------------------------------------------------------
 # Ensemble configuration
@@ -83,8 +156,8 @@ ENSEMBLE_CONFIGS = [
 
 
 def is_openrouter_model(model: str) -> bool:
-    """Return True if the model should be routed through the OpenRouter proxy."""
-    return model.startswith("openrouter/") or model in OPENROUTER_MODELS
+    """Return True if the model takes the default OpenRouter lane."""
+    return resolve_lane(model) == "openrouter"
 
 
 @dataclass
@@ -247,60 +320,17 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
         Model response content
     """
 
-    # Route OpenRouter models to the OpenRouter proxy server
-    if is_openrouter_model(args.model):
-        server_url = OPENROUTER_SERVER_URL
-    else:
-        server_url = args.server_url
-
-    if args.model in GPT_MODELS:
-        if "codex" in args.model:
-            prompt = _completions_to_responses_convert_prompt(prompt)
-            payload = {
-                "model": args.model,
-                "input": prompt,
-            }
-        else:
-            payload = {
-                "model": args.model,
-                "reasoning_effort": args.reasoning_effort,
-                "max_completion_tokens": args.max_tokens,  # Total completion tokens = reasoning + output tokens
-                "messages": prompt,
-            }
-    elif is_openrouter_model(args.model):
-        payload = {
-            "model": args.model,
-            "messages": prompt,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-        }
-    elif args.model in CLAUDE_MODELS:
-        payload = {
-            "model": args.model,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "thinking": {"type": "enabled", "budget_tokens": 4096},
-            "messages": prompt,
-        }
-    elif args.model in OSS_MODELS:
-        payload = {
-            "model": args.model,
-            "messages": prompt,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-        }
-    else:
-        payload = {
-            "model": args.model,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "messages": prompt,
-        }
+    # The model name alone picks the backend lane, its endpoint, and the
+    # request shape.  ``args.server_url`` is no longer consulted for routing.
+    lane = resolve_lane(args.model)
+    server_url = lane_server_url(lane)
+    payload = build_payload(lane, args.model, args, prompt)
+    if _LLM_LOG_CONTEXT["dir"] and _is_local_compat_proxy(server_url):
+        payload["capx_log_dir"] = _LLM_LOG_CONTEXT["dir"]
+        payload["capx_turn"] = _LLM_LOG_CONTEXT["turn"]
     headers = {"Content-Type": "application/json"}
     if args.api_key:
         headers["Authorization"] = f"Bearer {args.api_key}"
-    elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
-        headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
     start_time = time.time()
     response = _post_with_retry(server_url, headers, payload)
     end_time = time.time()
@@ -319,10 +349,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     if args.debug:
         print(json.dumps(body, indent=2))
     try:
-        if args.model in GPT_MODELS and "codex" in args.model:
-            out["content"] = body["output_text"]
-        else:
-            out["content"] = body["choices"][0]["message"]["content"]
+        out["content"] = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as exc:
         raise RuntimeError(f"Unexpected response format: {body}") from exc
     if body.get("choices") is not None:
@@ -350,44 +377,23 @@ def query_model_streaming(
     Yields:
         Partial response chunks as they arrive
     """
-    if args.model in GPT_MODELS:
-        payload = {
-            "model": args.model,
-            "reasoning_effort": args.reasoning_effort,
-            "max_completion_tokens": args.max_tokens,
-            "messages": prompt,
-            "stream": True,
-        }
-    elif args.model in CLAUDE_MODELS:
-        payload = {
-            "model": args.model,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "thinking": {"type": "enabled", "budget_tokens": 4096},
-            "messages": prompt,
-            "stream": True,
-        }
-    else:
-        payload = {
-            "model": args.model,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "messages": prompt,
-            "stream": True,
-        }
+    lane = resolve_lane(args.model)
+    server_url = lane_server_url(lane)
+    payload = build_payload(lane, args.model, args, prompt, stream=True)
+    if _LLM_LOG_CONTEXT["dir"] and _is_local_compat_proxy(server_url):
+        payload["capx_log_dir"] = _LLM_LOG_CONTEXT["dir"]
+        payload["capx_turn"] = _LLM_LOG_CONTEXT["turn"]
 
     headers = {"Content-Type": "application/json"}
     if args.api_key:
         headers["Authorization"] = f"Bearer {args.api_key}"
-    elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
-        headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
 
     full_content = ""
     full_reasoning = ""
 
     start_time = time.time()
 
-    with _post_with_retry(args.server_url, headers, payload, stream=True) as response:
+    with _post_with_retry(server_url, headers, payload, stream=True) as response:
         response.raise_for_status()
 
         content_type = response.headers.get("content-type", "")

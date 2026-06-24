@@ -6,37 +6,33 @@ streaming, ensemble queries, and backward-compatible aliases.
 """
 
 from capx.llm.client import (
-    CLAUDE_MODELS,
     ENSEMBLE_CONFIGS,
-    GPT_MODELS,
-    OPENROUTER_MODELS,
-    OPENROUTER_SERVER_URL,
-    OSS_MODELS,
     VLM_MODELS,
     ModelQueryArgs,
     _completions_to_responses_convert_prompt,
+    build_payload,
     collapse_text_image_inputs,
     is_openrouter_model,
+    lane_server_url,
     query_model,
     query_model_ensemble,
     query_model_streaming,
     query_single_model_ensemble,
+    resolve_lane,
 )
 
 __all__ = [
-    "CLAUDE_MODELS",
     "ENSEMBLE_CONFIGS",
-    "GPT_MODELS",
-    "OPENROUTER_MODELS",
-    "OPENROUTER_SERVER_URL",
-    "OSS_MODELS",
     "VLM_MODELS",
     "ModelQueryArgs",
     "_completions_to_responses_convert_prompt",
+    "build_payload",
     "collapse_text_image_inputs",
     "is_openrouter_model",
+    "lane_server_url",
     "query_model",
     "query_model_ensemble",
     "query_model_streaming",
     "query_single_model_ensemble",
+    "resolve_lane",
 ]
