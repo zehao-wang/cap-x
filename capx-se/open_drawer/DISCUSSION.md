@@ -92,6 +92,40 @@ a contact-tolerant guarded-move primitive) so skills can make compliant contact
 moves; pure position control + coarse collision cannot reach low/cluttered
 targets. This is probably the single most important missing capability.
 
+### 9. Robustness: a "success" that knocks over other objects isn't a solution
+Measured on the *successful* middle-drawer run: the arm displaced the bowl
+~210–240 mm, cream cheese ~100 mm, plate ~40 mm. On a real robot this is a
+failure. Findings:
+- **Collision-OFF motion** (pyroki IK / curobo `use_world_collision=False`) plows
+  through the scene. The reach corridor for the front-normal grasp passes right
+  over the bowl that sits in front of the cabinet.
+- **Collision-AWARE curobo works but is finicky.** With default robot spheres the
+  start config is falsely in-collision → `GRAPH_FAIL`; shrinking the spheres
+  (buffer −0.04) plans but the under-sized robot model then *grazes* obstacles for
+  real. A full-size robot (buffer 0) + larger `robot_distance_threshold` (0.40)
+  both plans and cuts reach-disturbance to ~29 mm in isolation.
+- **But it's non-deterministic in the full pipeline**: `plan_to_grasp_poses` does
+  IK then a **joint-space plan to the nearest IK solution (`plan_single_js`)**,
+  which isn't collision-checked against the world the way the pose plan is — so the
+  executed path still sometimes grazes the bowl (~120 mm). The collision guarantee
+  is only as good as the weakest stage.
+- **Single-view world mesh** (marching cubes from one agentview depth)
+  underestimates partially-occluded objects (the bowl), so even a correct planner
+  routes too close.
+- **The pull is not collision-aware/constrained** and over-pulls past the drawer
+  limit (gripper slips, arm flails into the table objects). Mitigated with a
+  no-progress stop, a bounded pull distance, and a lift-then-home retreat, but the
+  pull should be a guarded, collision-aware constrained motion.
+
+**Improvements:** (a) a single collision-aware motion facade whose *every* stage
+(IK seed, joint-space plan, Cartesian pull) is collision-checked; (b) a
+**multi-view (agentview+wrist) fused collision world** so obstacles aren't
+under-modeled; (c) **obstacle-aware grasp/approach selection** (pick the approach
+corridor and the grasp on the handle that are clear of other objects — exactly
+what a modern grasp model like AnyGrasp + a real collision world would give);
+(d) report object-disturbance as a first-class eval metric alongside
+`check_success` so "robust" is measured, not assumed.
+
 ## Bottom line
 The perception + planning *ingredients* are good, but they're not assembled into
 a reliable, observable, eval-consistent control loop. The highest-leverage fixes
