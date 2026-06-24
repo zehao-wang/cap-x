@@ -81,16 +81,21 @@ class HorlPlanner:
     smooths it. Fixed T + sphere-pool size => the pyroki kernels compile once."""
 
     def __init__(self, n_spheres: int = 96, timesteps: int = 32,
-                 sphere_radius: float = 0.025, plan_time: float = 5.0):
+                 sphere_radius: float = 0.025, plan_time: float = 5.0,
+                 world_collision_margin: float = 0.01):
         # Bypass HORL's asset check (it points at HORL's own franka assets); we use
         # cap-x's. Harness then builds the solver from our ROBOT dict.
+        # Small world_collision_margin: the drawer handle is low and tucked behind
+        # the front table objects, so the gripper must dip close to them to seat on
+        # the handle; the default 4 cm margin parks the grasp ~3 cm high and misses.
         import retargeting_solver.motion_plan.self_evolve.runner as _runner
         _runner.assert_assets_exist = lambda: None
         from retargeting_solver.motion_plan.ompl_planner import OMPLPlanner
         self.N = int(n_spheres)
         self.T = int(timesteps)
         self.r = float(sphere_radius)
-        self.h = _runner.Harness(robot=ROBOT, project_root=_CAPX)
+        self.h = _runner.Harness(robot=ROBOT, opt={"world_collision_margin": float(world_collision_margin)},
+                                 project_root=_CAPX)
         self.solver = self.h.solver
         self.dof = int(self.h.dof)
         self.ompl = OMPLPlanner(self.h, plan_time=plan_time, trajopt=True,
