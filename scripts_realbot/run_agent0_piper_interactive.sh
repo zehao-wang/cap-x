@@ -4,7 +4,7 @@
 # This is the real-robot sibling of run_agent0_qwen36_robosuite_interactive.sh.
 # Differences, all because this runs on a LOCAL workstation wired to hardware
 # (not a Leonardo compute node):
-#   - LLM is OpenRouter Gemini via the local proxy on :8110 — NOT Qwen3.6.
+#   - LLM is OpenRouter or Codex CLI via the local proxy on :8110 — NOT Qwen3.6.
 #     (robosuite/libero use the Qwen vLLM server; the real robot never does.)
 #   - No slurm / squeue / scratch / HF_HOME / MuJoCo-EGL plumbing.
 #   - Only SAM3 + Contact-GraspNet helper servers are started (Piper does IK
@@ -44,15 +44,22 @@ cd "$REPO_ROOT"
 PY="${CAPX_PYTHON:-.venv/bin/python}"
 
 # ---------------------------------------------------------------------------
-# Knobs (env-overridable). The LLM intentionally defaults to OpenRouter Gemini;
-# override PIPER_LLM_MODEL only with another OpenRouter-served model id.
+# Knobs (env-overridable). CAPX_LLM_BACKEND selects the local proxy backend.
+# The model string identifies the backend in cap-x's output and trail files.
 # ---------------------------------------------------------------------------
 CONFIG="${1:-env_configs/real/piper_real.yaml}"
 WEB_UI_PORT="${WEB_UI_PORT:-8200}"
-PIPER_LLM_MODEL="${PIPER_LLM_MODEL:-google/gemini-3.1-pro-preview}"
+PIPER_LLM_MODEL="${PIPER_LLM_MODEL:-}"
 PIPER_MAX_TOKENS="${PIPER_MAX_TOKENS:-20480}"
+CAPX_LLM_BACKEND="${CAPX_LLM_BACKEND:-openrouter}"
 OPENROUTER_PORT="${OPENROUTER_PORT:-8110}"
 OPENROUTER_URL="http://localhost:${OPENROUTER_PORT}/chat/completions"
+# The cap-x harness routes by model name. Both backends share this local proxy
+# port: gpt-5.5 -> codex lane, every other model -> openrouter lane. Point both
+# lane endpoints at it so the model alone selects the backend (the per-run
+# --server-url flag is now ignored).
+export CAPX_CODEX_URL="$OPENROUTER_URL"
+export CAPX_OPENROUTER_URL="$OPENROUTER_URL"
 SAM3_PORT="${SAM3_PORT:-8114}"
 GRASPNET_PORT="${GRASPNET_PORT:-8115}"
 # Viser 3D scene port for the Piper env. Pinned to a distinctive port (NOT viser's
@@ -67,10 +74,30 @@ export CAPX_VISER_PORT
 # ---------------------------------------------------------------------------
 [[ -x "$PY" ]] || { echo "ERROR: python not found at $PY (set CAPX_PYTHON)." >&2; exit 1; }
 [[ -f "$CONFIG" ]] || { echo "ERROR: config not found: $CONFIG" >&2; exit 1; }
-if [[ ! -f .openrouterkey ]]; then
-    echo "ERROR: .openrouterkey missing in repo root." >&2
-    echo "       echo 'sk-or-v1-...' > .openrouterkey   (README_piper §2)" >&2
-    exit 1
+case "$CAPX_LLM_BACKEND" in
+    openrouter)
+        if [[ ! -f .openrouterkey ]]; then
+            echo "ERROR: .openrouterkey missing in repo root." >&2
+            echo "       echo 'sk-or-v1-...' > .openrouterkey   (README_piper §2)" >&2
+            exit 1
+        fi
+        ;;
+    codex)
+        command -v codex >/dev/null 2>&1 || { echo "ERROR: Codex CLI not found on PATH." >&2; exit 1; }
+        codex login status >/dev/null 2>&1 || { echo "ERROR: Codex CLI is not logged in; run 'codex login' first." >&2; exit 1; }
+        ;;
+    *)
+        echo "ERROR: CAPX_LLM_BACKEND must be 'openrouter' or 'codex' (got '$CAPX_LLM_BACKEND')." >&2
+        exit 1
+        ;;
+esac
+
+if [[ -z "$PIPER_LLM_MODEL" ]]; then
+    if [[ "$CAPX_LLM_BACKEND" == "codex" ]]; then
+        PIPER_LLM_MODEL="gpt-5.5"
+    else
+        PIPER_LLM_MODEL="google/gemini-3.1-pro-preview"
+    fi
 fi
 if [[ ! -f web-ui/dist/index.html ]]; then
     echo "ERROR: web-ui/dist/index.html missing — frontend not built." >&2
@@ -217,9 +244,14 @@ start_if_down() {
     fi
 }
 
-echo "=== OpenRouter proxy ==="
-start_if_down "$OPENROUTER_PORT" openrouter \
-    bash scripts_realbot/openrouter_service/run_openrouter_service.sh --key-file .openrouterkey --port "$OPENROUTER_PORT"
+echo "=== LLM proxy ($CAPX_LLM_BACKEND) ==="
+if [[ "$CAPX_LLM_BACKEND" == "codex" ]]; then
+    start_if_down "$OPENROUTER_PORT" codex \
+        bash scripts_realbot/openrouter_service/run_codex_cli_service.sh --port "$OPENROUTER_PORT"
+else
+    start_if_down "$OPENROUTER_PORT" openrouter \
+        bash scripts_realbot/openrouter_service/run_openrouter_service.sh --key-file .openrouterkey --port "$OPENROUTER_PORT"
+fi
 
 # ---------------------------------------------------------------------------
 # Helper servers. In web-UI mode launch.py does NOT start the config's
@@ -251,7 +283,7 @@ cat <<EOF
 ============================================================================
   Launching CaP-X interactive web UI  (REAL Agilex PIPER)
     config:  $CONFIG
-    model:   $PIPER_LLM_MODEL  via  $OPENROUTER_URL  (OpenRouter — NOT Qwen)
+    model:   $PIPER_LLM_MODEL  via  $OPENROUTER_URL  ($CAPX_LLM_BACKEND local proxy — NOT Qwen)
     viser:   :$CAPX_VISER_PORT  (proxied through the web UI; not opened directly)
     logs:    $SESSION_DIR
 
@@ -265,11 +297,9 @@ EOF
 "$PY" -m capx.envs.launch \
     --config-path "$CONFIG" \
     --model "$PIPER_LLM_MODEL" \
-    --server-url "$OPENROUTER_URL" \
     --max-tokens "$PIPER_MAX_TOKENS" \
     --reasoning-effort medium \
     --visual-differencing-model "$PIPER_LLM_MODEL" \
-    --visual-differencing-model-server-url "$OPENROUTER_URL" \
     --output-dir "$SESSION_DIR" \
     --web-ui True \
     --web-ui-port "$WEB_UI_PORT"

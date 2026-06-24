@@ -130,6 +130,10 @@ if [[ -z "${QWEN_HOST:-}" ]]; then
 fi
 
 SERVER_URL="http://${QWEN_HOST}:${QWEN_PORT}/v1/chat/completions"
+# The cap-x harness routes by model name: "Qwen3.6-27B" -> the qwen lane, whose
+# endpoint comes from CAPX_QWEN_URL (else localhost:8000). Export it so the
+# remote vLLM host is honored (the per-run --server-url flag is now ignored).
+export CAPX_QWEN_URL="$SERVER_URL"
 
 echo "=== Probing Qwen server ==="
 echo "  URL: $SERVER_URL"
@@ -199,13 +203,12 @@ CMD=(
     --args.base-config-path "$BASE_CONFIG"
     --args.suites "${SUITES[@]}"
     --args.models "$QWEN_MODEL"
-    --args.server-url "$SERVER_URL"
     --args.num-workers "$NUM_WORKERS"
     --args.output-dir "$OUTPUT_DIR"
     --args.max-tokens "$QWEN_MAX_TOKENS"
     --args.reasoning-effort medium
+    # Qwen3.6-27B is a VL model — the VDM routes to the same qwen lane by name.
     --args.visual-differencing-model "$QWEN_MODEL"
-    --args.visual-differencing-model-server-url "$SERVER_URL"
 )
 [[ -n "$MAX_TASKS"  ]] && CMD+=( --args.max-tasks-per-suite "$MAX_TASKS" )
 [[ -n "$DEBUG_FLAG" ]] && CMD+=( $DEBUG_FLAG )

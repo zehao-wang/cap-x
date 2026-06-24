@@ -76,7 +76,6 @@ MUJOCO_GL=egl TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
     --args.base-config-path "$STRIPPED_CONFIG" \
     --args.suites "$SUITE" \
     --args.models "$MODEL" \
-    --args.server-url "$SERVER_URL" \
     --args.total-trials "$TRIALS" \
     --args.num-workers "$WORKERS" \
     --args.output-dir "$OUTPUT_DIR" \

@@ -139,6 +139,10 @@ if [[ -z "${QWEN_HOST:-}" ]]; then
 fi
 
 SERVER_URL="http://${QWEN_HOST}:${QWEN_PORT}/v1/chat/completions"
+# The cap-x harness routes by model name: "Qwen3.6-27B" -> the qwen lane, whose
+# endpoint comes from CAPX_QWEN_URL (else localhost:8000). Export it so the
+# remote vLLM host is honored (the per-run --server-url flag is now ignored).
+export CAPX_QWEN_URL="$SERVER_URL"
 
 echo "=== Probing Qwen server ==="
 echo "  URL: $SERVER_URL"
@@ -231,11 +235,9 @@ MUJOCO_EGL_DEVICE_ID=3 MUJOCO_GL=egl TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
     python -m capx.envs.launch \
         --config-path "$CONFIG" \
         --model "$QWEN_MODEL" \
-        --server-url "$SERVER_URL" \
         --max-tokens "$QWEN_MAX_TOKENS" \
         --reasoning-effort medium \
         --visual-differencing-model "$QWEN_MODEL" \
-        --visual-differencing-model-server-url "$SERVER_URL" \
         --output-dir "$SESSION_DIR" \
         --web-ui True \
         --web-ui-port "$WEB_UI_PORT"
