@@ -72,6 +72,11 @@ PRE_GAP = 0.037          # pre-grasp sits +Y of the bar, in the clear gap behind
 STANDOFF_UP = 0.18       # standoff directly above pre-grasp
 GRIP_MIN = 0.05          # closed-grip reading above this => holding the bar
 PULL_STEP = 0.07         # +Y per collision-aware pull step
+PULL_SUBSAMPLE = 2       # execute every k-th waypoint of each pull trajopt (final kept). The
+                         # pull is a straight +Y drag and every blocking move otherwise maxes the
+                         # 120-step convergence cap, so this ~halves pull sim-steps; the endpoint
+                         # (drawer openness) is unchanged and the loop's open-detector self-corrects
+                         # if a coarser command lands short. Transit/seat stay at full resolution.
 PULL_TRAVEL = 0.17       # EE travel that fully opens the drawer (slides 0.16). A deep, centered
                          # IK grip barely slips (EE travel ~= drawer travel), so stopping right at
                          # the drawer's travel reaches the -0.16 stop while keeping the +Y pull arc
@@ -108,7 +113,18 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
         planner = HorlPlanner(n_spheres=96, timesteps=32, plan_time=3.0,
                               sphere_radius=0.02, world_collision_margin=0.01)
 
-    def run(traj):
+    def run(traj, every=1):
+        """Execute a joint trajectory waypoint-by-waypoint (each a blocking move).
+        ``every>1`` commands only every k-th waypoint (the final one always kept) --
+        used for the PULL, where the path is a straight +Y drag (waypoints near-
+        collinear, so skipping them doesn't cut a corner toward the plate, which sits
+        BELOW) and every blocking move otherwise maxes the 120-step convergence cap.
+        Transit / seat keep every=1 (full resolution where collision routing matters)."""
+        if every > 1 and len(traj) > 2:
+            idx = list(range(0, len(traj), every))
+            if idx[-1] != len(traj) - 1:
+                idx.append(len(traj) - 1)
+            traj = [traj[i] for i in idx]
         for cfg in traj:
             t["move_to_joints"](np.asarray(cfg, float))
 
@@ -321,7 +337,7 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
         tr, info = planner.plan_trajopt(jts(), tgt, quat, obstacles,
                                         pos_weight=170, terminal_boost=140)
         if np.isfinite(float(info.get("final_cost", -1))):
-            run(tr)
+            run(tr, every=PULL_SUBSAMPLE)
         t["close_gripper"]()                     # re-tighten on the bar between steps
         # PROPRIOCEPTIVE open-detector: a full +Y pull command that, with the grip still
         # holding, fails to advance the TCP means the drawer has bottomed out -> fully open.

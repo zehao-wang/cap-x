@@ -6,7 +6,7 @@ to (a) find what cap-x lacks and (b) build a robust + SAFE solution. Commits: ol
 ones `[tmp]`, new ones `[auto]` (per AGENT.md). **Start every session by launching
 all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molmo).
 
-## Session 4 (2026-06-25): SOLVED gap-F horizon blowout — pull open-detector (5× fewer sim-steps)
+## Session 4 (2026-06-25): SOLVED gap-F horizon blowout — open-detector + pull subsample (8× fewer sim-steps)
 - **Measured WHERE the horizon goes.** Instrumented `run_robust.py`'s `_dbg` to record
   `env._sim_step_count` per stage. On the gap-F case (`libero_goal_swap/task0` seed1, the
   one that needed 80k) the budget was: pre 632, seat 94, **pull 38,924 (95.6%)**, retreat
@@ -36,11 +36,22 @@ all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molm
 - GAPS.md gap F updated: the cap-x-side gap is still real (cap-x needs a horizon-aware /
   non-blocking executor + per-waypoint convergence-failure signal); this session worked it
   around at the skill level so the skill fits budget.
-- **Next (optional, more horizon margin for very deep cabinets):** subsample the per-pull
-  trajopt trajectory in `run()` (each waypoint maxes the 120 cap; the pull is a straight
-  +Y drag so every-2nd-waypoint ~halves pull cost) — measure disturbance before/after, the
-  straight pull makes corner-cutting low-risk but disturbance is the gate. Also could trim
-  the per-waypoint cap for the pull (it never converges under load anyway).
+- **DONE this session too — pull trajectory subsampling (another ~2×).** `run()` now takes
+  `every=k` and the pull uses `PULL_SUBSAMPLE=2` (execute every 2nd waypoint of each pull
+  trajopt, final always kept). The pull is a straight +Y drag (waypoints near-collinear, so
+  skipping them doesn't cut a corner toward the plate, which sits BELOW) and each blocking
+  move otherwise maxes the 120-step cap, so this ~halves pull sim-steps; the endpoint
+  (openness) is unchanged and the open-detector self-corrects if a coarse command lands short.
+  Transit/seat stay full-resolution. **Verified:** gap-F case (swap0 s1) pull 7,512 → 3,910,
+  total 8,739 → **5,173**, fully open −0.16, disturbance 37 → **30 mm** (improved). Base s4
+  pull → 3,956, total → 6,373, fully open, disturbance 22 → 24 mm (noise). **Cumulative vs the
+  original gap-F blowout: 40,724 → 5,173 sim-steps (7.9×), pull 38,924 → 3,910 (10×).**
+- **Next (optional, diminishing returns):** could trim the per-waypoint convergence cap for
+  the pull (it never converges to 0.01 rad under load anyway, so a lower cap ≈ same drawer
+  motion for fewer steps) — but that needs an env-level `max_steps` knob on `move_to_joints`
+  (cap-x core), so it's a gap to report, not a skill-side tweak. Current 30k margin is ~6×;
+  likely not worth it. Remaining real work is the SAFETY tail (wine-bottle/plate ~25–30 mm
+  on some seeds), tracked above — separate from horizon.
 
 ## Session 3 (2026-06-25): gaps writeup compiled + other drawer settings probed
 - **cap-x gaps PDF** built: `paper/gaps.tex` + `paper/build.sh` (mirrors

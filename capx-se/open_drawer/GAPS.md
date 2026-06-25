@@ -109,7 +109,11 @@ travel (`DRAWER_OPEN_ADV=0.15`), or a pull command stalls against the hard stop
 advance plateau, not the joint). Result: the gap-F case now **SUCCEEDS at the original
 30,000 horizon** (8,739 sim-steps total, pull 7,512, drawer fully open −0.16) — was a
 FAIL needing 80k. Base task seeds 3/4/5 all still pass fully-open at ~9–14k steps, with
-no disturbance regression (seed 4 even improved 32→22 mm). **The cap-x-side gap remains
+no disturbance regression (seed 4 even improved 32→22 mm). **Plus pull-trajectory
+subsampling** (`run(every=2)`: command every 2nd waypoint of each pull trajopt, since
+the straight +Y drag has near-collinear waypoints and each blocking move maxes the 120
+cap) ~halves it again → gap-F case **5,173 sim-steps total (pull 3,910)**; cumulative
+**40,724 → 5,173 (7.9×), pull 38,924 → 3,910 (10×)**, disturbance 37→30 mm. **The cap-x-side gap remains
 real** for any skill that issues many waypoints near a load: cap-x still needs a
 horizon-aware / non-blocking executor + a per-waypoint convergence-failure signal, so
 skills don't each have to hand-roll an open/stall detector to stay in budget.

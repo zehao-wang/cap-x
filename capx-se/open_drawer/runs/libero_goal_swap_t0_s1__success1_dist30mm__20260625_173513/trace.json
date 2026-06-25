@@ -1,0 +1,292 @@
+{
+  "suite": "libero_goal_swap",
+  "task_id": 0,
+  "seed": 1,
+  "max_steps": 30000,
+  "instruction": "Open the middle layer of the drawer",
+  "success": true,
+  "object_disturbance_mm": {
+    "akita_black_bowl": 0.0,
+    "cream_cheese": 0.0,
+    "wine_bottle": 29.9,
+    "plate": 0.0
+  },
+  "max_object_disturbance_mm": 29.9,
+  "result": {
+    "target": "middle",
+    "handle": [
+      0.4087653591315584,
+      -0.15843206134275897,
+      0.109821645527578
+    ],
+    "grasped": true
+  },
+  "wall_seconds": 245.9,
+  "dataflow_summary": {
+    "n_steps": 16,
+    "n_llm_decisions": 8,
+    "n_local_model_calls": 6,
+    "local_models_used": [
+      "HORL-RRT/trajopt",
+      "HORL-trajopt",
+      "SAM3",
+      "pyroki-IK"
+    ],
+    "llm_decisions": [
+      {
+        "t": 1.27,
+        "purpose": "interpret instruction -> choose target drawer",
+        "inputs": "instruction(text)",
+        "decides": "target='middle' of bottom/middle/top"
+      },
+      {
+        "t": 2.74,
+        "purpose": "pick which detected handle is the target (height-labelled)",
+        "inputs": "3 handle 3D points (agentview[1 frame]) + instruction label",
+        "decides": "'middle' handle @ [ 0.409 -0.158  0.11 ]"
+      },
+      {
+        "t": 4.13,
+        "purpose": "estimate drawer pull/articulation axis (cabinet centroid -> handle)",
+        "inputs": "cabinet centroid + handle 3D (agentview[1 frame], single-view -> no depth axis)",
+        "decides": "approach=[-0. -1. -0.]; pull=+[0. 1. 0.]"
+      },
+      {
+        "t": 53.9,
+        "purpose": "evaluate seat result -> accept / re-seat",
+        "inputs": "proprio(achieved TCP + closed-grip reading) [no frames]",
+        "decides": "seat 0: TCP=[ 0.409 -0.157  0.107] grip=0.164 -> ACCEPT"
+      },
+      {
+        "t": 53.91,
+        "purpose": "decide pull progress -> continue / re-seat / stop",
+        "inputs": "proprio(TCP advance + grip) [no frames]",
+        "decides": "step 0: advanced=0mm/170, grip=0.164"
+      },
+      {
+        "t": 203.35,
+        "purpose": "decide pull progress -> continue / re-seat / stop",
+        "inputs": "proprio(TCP advance + grip) [no frames]",
+        "decides": "step 1: advanced=80mm/170, grip=0.176"
+      },
+      {
+        "t": 236.16,
+        "purpose": "decide pull progress -> continue / re-seat / stop",
+        "inputs": "proprio(TCP advance + grip) [no frames]",
+        "decides": "step 2: advanced=158mm/170, grip=0.182"
+      },
+      {
+        "t": 236.17,
+        "purpose": "open-detector: grip holding + advanced ~full travel -> stop",
+        "inputs": "proprio(TCP advance + grip) [no frames]",
+        "decides": "step 2: advanced=158mm>150 grip=0.182 -> drawer fully open, STOP"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "i": 0,
+      "t": 0.0,
+      "kind": "info",
+      "msg": "building HORL planner (one-time JAX compile ~2 min) ..."
+    },
+    {
+      "i": 1,
+      "t": 1.27,
+      "kind": "llm",
+      "msg": "interpret instruction -> choose target drawer",
+      "purpose": "interpret instruction -> choose target drawer",
+      "inputs": "instruction(text)",
+      "decides": "target='middle' of bottom/middle/top"
+    },
+    {
+      "i": 2,
+      "t": 1.28,
+      "kind": "local",
+      "msg": "SAM3: segment 'drawer handle'",
+      "model": "SAM3",
+      "inputs": "agentview.rgb[1 frame]",
+      "outputs": "handle masks (+depth[1 frame] -> 3D points)"
+    },
+    {
+      "i": 3,
+      "t": 2.74,
+      "kind": "llm",
+      "msg": "pick which detected handle is the target (height-labelled)",
+      "purpose": "pick which detected handle is the target (height-labelled)",
+      "inputs": "3 handle 3D points (agentview[1 frame]) + instruction label",
+      "decides": "'middle' handle @ [ 0.409 -0.158  0.11 ]"
+    },
+    {
+      "i": 4,
+      "t": 2.74,
+      "kind": "local",
+      "msg": "SAM3: segment 'wooden cabinet'",
+      "model": "SAM3",
+      "inputs": "agentview.rgb[1 frame]",
+      "outputs": "cabinet mask -> centroid 3D"
+    },
+    {
+      "i": 5,
+      "t": 4.13,
+      "kind": "llm",
+      "msg": "estimate drawer pull/articulation axis (cabinet centroid -> handle)",
+      "purpose": "estimate drawer pull/articulation axis (cabinet centroid -> handle)",
+      "inputs": "cabinet centroid + handle 3D (agentview[1 frame], single-view -> no depth axis)",
+      "decides": "approach=[-0. -1. -0.]; pull=+[0. 1. 0.]"
+    },
+    {
+      "i": 6,
+      "t": 4.13,
+      "kind": "info",
+      "msg": "approach=[-0. -1. -0.]  obstacle cloud: 5211 pts"
+    },
+    {
+      "i": 7,
+      "t": 4.4,
+      "kind": "local",
+      "msg": "HORL-RRT/trajopt: plan transit to clear pre-grasp",
+      "model": "HORL-RRT/trajopt",
+      "inputs": "start joints(proprio) + pre pose + agentview depth obstacle cloud[1 frame]",
+      "outputs": "joint trajectory"
+    },
+    {
+      "i": 8,
+      "t": 52.76,
+      "kind": "local",
+      "msg": "pyroki-IK: deterministic IK at bar grasp pose",
+      "model": "pyroki-IK",
+      "inputs": "bar pose + current joints(proprio) [no frames]",
+      "outputs": "joint config"
+    },
+    {
+      "i": 9,
+      "t": 53.9,
+      "kind": "llm",
+      "msg": "evaluate seat result -> accept / re-seat",
+      "purpose": "evaluate seat result -> accept / re-seat",
+      "inputs": "proprio(achieved TCP + closed-grip reading) [no frames]",
+      "decides": "seat 0: TCP=[ 0.409 -0.157  0.107] grip=0.164 -> ACCEPT"
+    },
+    {
+      "i": 10,
+      "t": 53.91,
+      "kind": "llm",
+      "msg": "decide pull progress -> continue / re-seat / stop",
+      "purpose": "decide pull progress -> continue / re-seat / stop",
+      "inputs": "proprio(TCP advance + grip) [no frames]",
+      "decides": "step 0: advanced=0mm/170, grip=0.164"
+    },
+    {
+      "i": 11,
+      "t": 53.92,
+      "kind": "local",
+      "msg": "HORL-trajopt: collision-aware +pull step",
+      "model": "HORL-trajopt",
+      "inputs": "start joints(proprio) + step target + depth obstacle cloud[1 frame]",
+      "outputs": "joint trajectory"
+    },
+    {
+      "i": 12,
+      "t": 203.35,
+      "kind": "llm",
+      "msg": "decide pull progress -> continue / re-seat / stop",
+      "purpose": "decide pull progress -> continue / re-seat / stop",
+      "inputs": "proprio(TCP advance + grip) [no frames]",
+      "decides": "step 1: advanced=80mm/170, grip=0.176"
+    },
+    {
+      "i": 13,
+      "t": 203.36,
+      "kind": "local",
+      "msg": "HORL-trajopt: collision-aware +pull step",
+      "model": "HORL-trajopt",
+      "inputs": "start joints(proprio) + step target + depth obstacle cloud[1 frame]",
+      "outputs": "joint trajectory"
+    },
+    {
+      "i": 14,
+      "t": 236.16,
+      "kind": "llm",
+      "msg": "decide pull progress -> continue / re-seat / stop",
+      "purpose": "decide pull progress -> continue / re-seat / stop",
+      "inputs": "proprio(TCP advance + grip) [no frames]",
+      "decides": "step 2: advanced=158mm/170, grip=0.182"
+    },
+    {
+      "i": 15,
+      "t": 236.17,
+      "kind": "llm",
+      "msg": "open-detector: grip holding + advanced ~full travel -> stop",
+      "purpose": "open-detector: grip holding + advanced ~full travel -> stop",
+      "inputs": "proprio(TCP advance + grip) [no frames]",
+      "decides": "step 2: advanced=158mm>150 grip=0.182 -> drawer fully open, STOP"
+    }
+  ],
+  "measurements": [
+    {
+      "t": 52.76,
+      "stage": "pre",
+      "drawer_qpos": {
+        "wooden_cabinet_1_top_level": 0.0,
+        "wooden_cabinet_1_middle_level": 0.0,
+        "wooden_cabinet_1_bottom_level": 0.0
+      },
+      "ee": [
+        0.408,
+        -0.007,
+        0.113
+      ],
+      "sim_steps": 632,
+      "stage_sim_steps": 632
+    },
+    {
+      "t": 53.9,
+      "stage": "grasped",
+      "drawer_qpos": {
+        "wooden_cabinet_1_top_level": 0.0016,
+        "wooden_cabinet_1_middle_level": -0.001,
+        "wooden_cabinet_1_bottom_level": 0.0
+      },
+      "ee": [
+        0.409,
+        -0.054,
+        0.107
+      ],
+      "sim_steps": 726,
+      "stage_sim_steps": 94
+    },
+    {
+      "t": 236.18,
+      "stage": "pulled",
+      "drawer_qpos": {
+        "wooden_cabinet_1_top_level": 0.0016,
+        "wooden_cabinet_1_middle_level": -0.16,
+        "wooden_cabinet_1_bottom_level": 0.0
+      },
+      "ee": [
+        0.41,
+        0.105,
+        0.103
+      ],
+      "sim_steps": 4636,
+      "stage_sim_steps": 3910
+    },
+    {
+      "t": 245.81,
+      "stage": "done",
+      "drawer_qpos": {
+        "wooden_cabinet_1_top_level": 0.0016,
+        "wooden_cabinet_1_middle_level": -0.16,
+        "wooden_cabinet_1_bottom_level": 0.0
+      },
+      "ee": [
+        0.409,
+        0.094,
+        0.349
+      ],
+      "sim_steps": 5173,
+      "stage_sim_steps": 537
+    }
+  ]
+}
