@@ -42,4 +42,28 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
 - **教训 (lesson):** why it accepted/rejected; the root cause the tracking-viz showed.
 - **下一步 (next):** the binding axis now + the next hypothesis it suggests.
 
+### gen1 — declarative goal-relation DSL (weak-LLM-friendly judge authoring) ⏳ PENDING-EVAL
+- **改动 (change):** new `algo/judge_dsl.py` — a DECLARATIVE relation layer so a *weak*
+  runtime LLM writes the per-turn judge in ONE line instead of raw numpy over `coords`.
+  Agent names a goal RELATION + OBJECTS in plain words:
+  `J.judge(ctx, "place_in", target="bowl", reference="bin")`. Relations implemented (graded,
+  metric, early-abort): `place_in / on_top_of / next_to / opened / closed / lifted /
+  grasped(co-moving, slip→abort) / removed_from` (+ aliases open/close/pick_up/stack/...).
+  Wired `ctx.points_of("name")` in `algo/track_judge.py` → local **SAM3** segments the named
+  object on frame 0 → grid tracks seeded in that mask → `[T,Nt,3]`; graceful whole-frame
+  fallback when SAM is down (never crashes the judge). Rewrote `algo/judge_prompt.py` to make
+  the one-liner the PRIMARY path and raw-`ctx` code only an escape hatch.
+- **结果 (result):** NOT yet benchmarked — the runtime LLM endpoint (:8110, mid-migration to
+  the Codex CLI server) and the TAPIP3D server are both down, so no A/B numbers. Offline
+  validation passes: `judge_dsl` self-test (all 8 relations + dispatch), import/plumbing,
+  and the SAM-down → whole-grid fallback path.
+- **教训 (lesson):** the north-star ("make a weak model succeed") is an *authoring-ergonomics*
+  problem as much as a geometry one — the win is collapsing the judge from "write correct 3D
+  numpy" to "name a relation + objects". The metric `feedback` residual (e.g. "4.0cm from
+  container center") is what makes the verdict drive the NEXT code revision, not just FINISH.
+- **下一步 (next):** bring up SAM3 + TAPIP3D; validate named-object resolution on a real libero
+  frame (crux: plain-word name → local SAM mask on a real scene); then run the A/B benchmark
+  vs the VDM baseline. Consider 2-condition goals (open+place) and a `ctx.state` open-baseline
+  for `closed`.
+
 <!-- newest generations go ABOVE this line as they happen -->

@@ -61,6 +61,45 @@ class _Ctx:
         keep = mask[ys, xs]
         return np.nonzero(keep)[0]
 
+    # ── named-object resolution (local SAM model, NOT an LLM) ────────────────────
+    _segment_fn = None  # lazy, shared per ctx
+
+    def segment(self, text):
+        """Segment a NAMED object on frame 0 via the local SAM3 service → bool mask
+        [H, W], or None if SAM is unavailable / finds nothing. No LLM involved."""
+        if self._segment_fn is None:
+            try:
+                from capx.integrations.vision.sam3 import init_sam3
+                self._segment_fn = init_sam3()
+            except Exception as e:  # SAM service down / import error → caller falls back
+                print(f"[track-judge] SAM3 unavailable for segment({text!r}): {e}")
+                self._segment_fn = False
+        if not self._segment_fn:
+            return None
+        try:
+            results = self._segment_fn(self.rgb[0], text)
+        except Exception as e:
+            print(f"[track-judge] SAM3 segment({text!r}) failed: {e}")
+            return None
+        if not results:
+            return None
+        best = max(results, key=lambda r: r.get("score", 0.0))
+        return np.asarray(best["mask"], dtype=bool)
+
+    def points_of(self, text):
+        """Named object → its tracked sub-trajectory ``[T, Nt, 3]`` (world frame).
+
+        Segments the object once (frame 0, local SAM) then selects the grid tracks that
+        started inside that mask. Returns ``None`` when nothing resolves so the DSL falls
+        back to the whole-frame grid instead of crashing the judge."""
+        mask = self.segment(text)
+        if mask is None:
+            return None
+        idx = self.mask_points(mask)
+        if idx.size == 0:
+            return None
+        return self.coords[:, idx, :]
+
 
 class TrackJudge:
     def __init__(self, socket_path="/tmp/demo_bridge/sockets/tapip3d.sock", viz_dir=None,

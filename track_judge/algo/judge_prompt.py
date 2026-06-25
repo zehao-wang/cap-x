@@ -1,8 +1,12 @@
 """judge_prompt — the prompt fragment appended to cap-agent0 when state_judge==tracking.
 
-It tells the single-LLM agent that, in addition to the usual execution code, it must
-ALSO emit a top-level ``judge_state(ctx)`` that judges task state from 3D point
-TRAJECTORIES (pure code, no LLM at judgment time). Keep it concrete.
+It tells the single-LLM agent to ALSO emit a top-level ``judge_state(ctx)`` that judges
+task state from 3D point TRAJECTORIES (pure code, no LLM at judgment time).
+
+DESIGN (AGENT.md north-star: make a WEAK model succeed): the agent should NOT write raw
+numpy geometry. In almost every case its judge is ONE LINE — name the goal RELATION and
+the OBJECTS by plain words, and the harness does the rest (local SAM segmentation →
+TAPIP3D 3D tracking → metric geometry). Raw-``ctx`` code is only an escape hatch.
 """
 
 from __future__ import annotations
@@ -12,58 +16,48 @@ JUDGE_PROMPT_FRAGMENT = r'''
 In addition to your execution code, define ONE top-level function:
 
     def judge_state(ctx):
-        ...
-        return {"done": bool, "abort": bool, "progress": float, "feedback": str}
+        from track_judge.algo import judge_dsl as J
+        return J.judge(ctx, RELATION, target="<object>", reference="<object>")
 
-This function decides task state by GEOMETRY over 3D point TRAJECTORIES — NOT from a
-single image, and it must NOT call any LLM/VLM. It runs once per turn, on the turn's
-dense RGB-D video, after your execution code runs. You may import ANY package (numpy,
-scipy, your own geometry); convenience primitives are in `ctx.lib`.
+It decides task state by GEOMETRY over 3D point TRAJECTORIES (not one image) and must
+NOT call any LLM/VLM. It runs once per turn on the turn's dense RGB-D video, AFTER your
+execution code. You name objects in PLAIN WORDS; a LOCAL segmentation model finds them
+and a 3D tracker follows them — you do not write coordinates or numpy.
 
-Because you see motion over time (not one frame), test things a frame-diff cannot:
-object dropped / fell (descent past support), grasp slip (object stops co-moving with
-the gripper), collision / clearance (min inter-set distance over time), 3D containment
-that PERSISTS across the last K frames, and early failure -> set abort=True to retry
-immediately instead of running the whole trajectory.
+----- THE EASY PATH: pick ONE relation (this covers almost every task) -----
+    J.judge(ctx, "place_in",   target="bowl",   reference="bin")    # X came to rest inside Y
+    J.judge(ctx, "on_top_of",  target="cube",   reference="plate")  # X rests on top of Y
+    J.judge(ctx, "stack",      target="red block", reference="blue block")
+    J.judge(ctx, "next_to",    target="cup",    reference="plate", dist=0.10)
+    J.judge(ctx, "opened",     target="drawer handle", travel=0.15) # articulated open (metres)
+    J.judge(ctx, "closed",     target="drawer handle", travel=0.15)
+    J.judge(ctx, "lifted",     target="mug", lift=0.05)             # picked up off support
+    J.judge(ctx, "removed_from",target="bowl", reference="cabinet") # taken out of Y
+    J.judge(ctx, "grasped",    target="mug", gripper="robot gripper") # held / co-moving (slip→abort)
 
-`ctx` exposes:
-  ctx.coords   : np.ndarray [T, N, 3]  tracked points in WORLD frame, metres, over T frames
-  ctx.visibs   : np.ndarray [T, N]     visibility (TAPIP3D predicts occluded points too)
-  ctx.rgb      : np.ndarray [T, H, W, 3] uint8   the (sub-sampled) turn video
-  ctx.depth    : np.ndarray [T, H, W] float32    depth in metres
-  ctx.K        : np.ndarray [3, 3]     camera intrinsics
-  ctx.lib      : the judge_lib module (points_in_region_3d, centroid, fraction_in_region,
-                 object_dropped, relative_motion, min_pairwise_distance, speed,
-                 persistence_in_region, ...)
-  ctx.task     : str  the task description
-  ctx.state    : dict persistent ACROSS turns — stash baselines/counters here
-  ctx.mask_points(mask2d) -> int[]  : indices of tracked points seeded inside a 2D bool
-                                      mask [H, W]; default tracking is a whole-frame grid
+Relation aliases are accepted (open/close, pick_up, put_in, beside, take_out, ...).
+Optional physical knobs (metres) tune thresholds: travel=, lift=, dist=, k=, z_height=.
+Name objects exactly as a person would point at them ("the white bowl", "top drawer").
 
-Verdict fields (all optional except you should set `done`):
-  done     : True when the task goal is geometrically satisfied (drives FINISH)
-  abort    : True on detected failure -> REGENERATE/retry now (early abort)
-  progress : optional float in [0, 1], a graded distance-to-goal signal
-  feedback : optional short string for the agent's next turn
-  regions  : optional list of region dicts to draw in the saved tracking-viz, e.g.
-             {"type": "aabb", "lo": [x,y,z], "hi": [x,y,z]}
-A bare bool or bare string return is tolerated.
+The call RETURNS the verdict the agent acts on:
+    {"done": bool, "abort": bool, "progress": float in [0,1], "feedback": str, "regions":[...]}
+- done   -> FINISH ;  abort=True -> REGENERATE NOW (early failure, e.g. detected slip/drop)
+- progress is a graded distance-to-goal; feedback is a METRIC residual you can act on next
+  turn (e.g. "target 4.0cm from container center"), not a vague opinion.
 
-Example — "place the bowl in the bin" (object placed inside a 3D region and stays):
+If the goal is two conditions, evaluate two relations and combine, e.g.:
+    a = J.judge(ctx, "opened", target="drawer handle")
+    b = J.judge(ctx, "place_in", target="bowl", reference="drawer")
+    return {"done": a["done"] and b["done"], "abort": a["abort"] or b["abort"],
+            "progress": 0.5*(a["progress"]+b["progress"]),
+            "feedback": a["feedback"] + " | " + b["feedback"]}
 
-    def judge_state(ctx):
-        lib = ctx.lib
-        bin_region = {"type": "aabb", "lo": [0.30, -0.10, 0.00], "hi": [0.50, 0.10, 0.12]}
-        obj = ctx.coords  # whole-frame grid; refine with ctx.mask_points(...) if you segment
-        placed = lib.persistence_in_region(obj, bin_region, k=4)
-        dropped, frame = lib.object_dropped(obj, support_z=0.0)
-        frac = lib.fraction_in_region(obj[-1], bin_region)
-        if dropped and not placed:
-            return {"done": False, "abort": True,
-                    "feedback": f"object fell at frame {frame}; regrasp and retry",
-                    "regions": [bin_region]}
-        return {"done": placed, "abort": False, "progress": frac,
-                "feedback": "in bin" if placed else "not yet in bin region",
-                "regions": [bin_region]}
+----- ESCAPE HATCH: only if no relation fits, write raw geometry over `ctx` -----
+  ctx.coords [T,N,3] world-frame metres tracks · ctx.visibs [T,N] · ctx.rgb [T,H,W,3] ·
+  ctx.depth [T,H,W] · ctx.K [3,3] · ctx.task (str) · ctx.state (dict, persists across turns)
+  ctx.points_of("name") -> [T,Nt,3] tracks of a named object (local SAM + tracker)
+  ctx.lib : geometric primitives (points_in_region_3d, object_dropped, relative_motion,
+            min_pairwise_distance, persistence_in_region, speed, ...)
+Return the same verdict dict. Prefer the easy path; this is for unusual goals only.
 ==============================================================================
 '''
