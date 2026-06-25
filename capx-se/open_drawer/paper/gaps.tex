@@ -309,6 +309,37 @@ assumed.
         \code{functions()} (example rot).
 \end{itemize}
 
+\section{Instrumenting the data-flow: where would an agent call the LLM?}
+\label{sec:dataflow}
+To make the control loop legible (and to feed agent-design decisions) the runner now
+emits a structured trace that tags every key step as either an \textbf{LLM-decision
+boundary} --- where an agentic cap-x would invoke the LLM --- or a \textbf{local-model
+execution} (SAM3, pyroki-IK, HORL trajopt/RRT), and for each records \emph{what data it
+consumes} (single frame vs.\ frame sequence vs.\ proprioception) and \emph{what it
+decides}. Per run we also save a replay for \emph{every} camera view (agentview $+$ wrist),
+not just one.
+
+The map this produces for the drawer skill is itself a finding:
+\begin{itemize}
+  \item The skill makes \textbf{zero real LLM calls at run time} --- every decision is
+        deterministic code over local-model outputs $+$ proprioception. The ``llm'' tags
+        mark only \emph{where} an agentic version would call out, and \emph{on what}.
+  \item The would-be-LLM decisions are: interpret instruction $\to$ target drawer
+        (\emph{text only}); pick the target handle (\emph{3 handle 3D points from one
+        agentview frame}); estimate the pull axis (\emph{cabinet$+$handle centroids from
+        one frame} --- single-view, so the depth axis is unobservable, hence the probe in
+        the earlier skill); and the seat/pull/abort gates (\emph{proprioception only ---
+        achieved TCP $+$ grip, no frames}).
+  \item So almost every control decision needs only a \emph{single} frame or \emph{just
+        proprioception} --- not a video clip. The one decision that structurally wants a
+        \emph{sequence} is axis/articulation estimation (a before/after pair), which is
+        exactly the signal a 3D tracker provides and a single-frame VLM cannot. This is
+        concrete, per-decision evidence for choosing \emph{which} steps justify a richer
+        (sequence/tracker) input and which are wastefully over-served by a per-turn VLM.
+\end{itemize}
+The trace (\code{trace.json} $+$ \code{summary.txt}, with per-run multi-view replays)
+lands in a cap-x-style per-run artifact dir, mirroring \code{trial.py}'s output layout.
+
 \section{What we added over stock cap-x to reach 5/5}
 The win came from one decisive change plus the supports that let it land safely every time
 (detail in \code{DESIGN\_SUMMARY.md}):

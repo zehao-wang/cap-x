@@ -1,0 +1,4 @@
+# Keep the cap-x-style run artifacts (trace.json / summary.txt) in git, but don't
+# bloat the repo with every replay video. Curated success replays live in ../replays/.
+*.mp4
+*.gif

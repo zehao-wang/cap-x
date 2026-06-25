@@ -43,9 +43,30 @@ all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molm
     cost" and that even abort motions need a guarded/collision-checked executor.
 - Per the standing rule: settings where graspnet/reach finds no viable grasp (awaiting
   AnyGrasp) are simply skipped (the bottom drawer is one such).
-- **Replays:** previously we saved NO success videos (only text logs + static PNG snaps).
-  Added `--video` to `run_robust.py` (env `enable_video_capture` + `get_recorded_frames`
-  + imageio, same as `harness.py`). Replays land in `replays/`.
+- **Run artifacts (cap-x convention).** `run_robust.py` now persists a per-run dir by
+  default (mirrors `trial.py`'s `output_dir/trial_*`): `runs/<suite>_t<id>_s<seed>__
+  success<0/1>_dist<NN>mm__<ts>/` with `trace.json` (key-step skill log via injected
+  `log=` + per-stage privileged measurements + result + disturbance summary),
+  `summary.txt` (human-readable key steps), and `video_success<0/1>.mp4` (the replay, via
+  cap-x's own `capx.utils.video_utils._write_video`). Flags: `--out-dir`, `--no-video`,
+  `--no-artifacts`, `--max-steps`. `runs/.gitignore` keeps the json/txt logs in git but
+  ignores mp4s (curated replays live in `replays/`). **Bug fixed:** the video getter was
+  `get_recorded_frames` (doesn't exist) in both `run_robust.py` and `harness.py` — so
+  harness video had NEVER worked; corrected to `get_video_frames()`.
+- **Multi-view replays + dataflow-tagged log.** `runlog.py` (new) tags each key step
+  `llm` (a DECISION boundary — where an agentic cap-x would call the LLM; records the
+  call's PURPOSE, the DATA it consumes [single frame vs sequence vs proprio], and what it
+  DECIDES) vs `local` (SAM3 / pyroki-IK / HORL planner). `robust_skill.py` is annotated
+  with these; `solve_robust(log=...)` accepts a plain `print` (auto-wrapped) or a
+  `RunLogger`. `run_robust.py` records BOTH agentview + wrist replays (multi-view) and
+  writes `dataflow_summary` into `trace.json` + an "llm-decision data map" into
+  `summary.txt`. **Insight surfaced:** the skill makes ZERO real run-time LLM calls; all
+  *control* decisions (seat/pull) use **proprioception only [no frames]**, *perception*
+  decisions use a **single agentview frame**, and axis estimation is **single-view (no
+  depth axis)** — the one decision that structurally wants a sequence/probe. This per-
+  decision data map is the input for deciding which steps justify a richer (tracker/
+  sequence) input vs which a per-turn VLM over-serves. See paper §"Instrumenting the
+  data-flow".
 
 ## Where things stand (updated 2026-06-25, session 2)
 Target = `libero_goal/task0` (middle drawer; instruction==goal==middle, reachable).

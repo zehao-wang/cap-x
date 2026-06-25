@@ -39,6 +39,7 @@ from __future__ import annotations
 import numpy as np
 
 from .horl_planner import HorlPlanner
+from .runlog import as_logger
 
 
 def _unit(v):
@@ -80,7 +81,12 @@ PULL_TRAVEL = 0.17       # EE travel that fully opens the drawer (slides 0.16). 
 
 def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
                  planner: HorlPlanner | None = None, log=print, debug=None):
-    """Robust + safe open-drawer. ``fns`` = api.functions(). Returns a result dict."""
+    """Robust + safe open-drawer. ``fns`` = api.functions(). Returns a result dict.
+
+    ``log`` may be a plain callable (``print``) or a ``runlog.RunLogger``; either way
+    key steps are tagged llm (decision boundary, with the data it uses) vs local
+    (SAM3 / pyroki-IK / HORL planner) so the agent's data-flow is legible."""
+    log = as_logger(log)
     t = fns
     if planner is None:
         log("building HORL planner (one-time JAX compile ~2 min) ...")
@@ -101,6 +107,8 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
         return np.asarray(t["get_observation"]()["robot_cartesian_pos"][:3], float)
 
     which = next((k for k in ("bottom", "middle", "top") if k in instruction.lower()), "middle")
+    log.llm("interpret instruction -> choose target drawer",
+            inputs="instruction(text)", decides=f"target='{which}' of bottom/middle/top")
 
     obs0 = t["get_observation"]()
     cam = obs0["agentview"]
@@ -108,6 +116,8 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
     K, ext = cam["intrinsics"], cam["pose_mat"]
 
     # detect + height-label the three handles, pick the requested one
+    log.local("SAM3", "segment 'drawer handle'", inputs="agentview.rgb[1 frame]",
+              outputs="handle masks (+depth[1 frame] -> 3D points)")
     masks = sorted(t["segment_sam3_text_prompt"](rgb, "drawer handle"),
                    key=lambda d: -d.get("score", 0.0))
     found = []
@@ -124,10 +134,14 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
     found.sort(key=lambda q: q[2])
     labels = ["bottom", "middle", "top"][: len(found)]
     mid = dict(zip(labels, found)).get(which, found[len(found) // 2])
-    log(f"target '{which}' handle @ {np.round(mid, 3)}")
+    log.llm("pick which detected handle is the target (height-labelled)",
+            inputs=f"{len(found)} handle 3D points (agentview[1 frame]) + instruction label",
+            decides=f"'{which}' handle @ {np.round(mid, 3)}")
 
     # grasp frame: front normal snapped to the dominant horizontal axis (the drawer
     # front is vertical => its outward normal is horizontal). Resolves to -Y here.
+    log.local("SAM3", "segment 'wooden cabinet'", inputs="agentview.rgb[1 frame]",
+              outputs="cabinet mask -> centroid 3D")
     cab = sorted(t["segment_sam3_text_prompt"](rgb, "wooden cabinet"),
                  key=lambda d: -d.get("score", 0.0))
     cpt = _mask_pt(t, cab[0]["mask"], depth, K, ext) if cab else None
@@ -138,6 +152,9 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
     outward[j] = np.sign(raw[j]) if raw[j] != 0 else 1.0
     approach = -outward
     quat = t["rotation_matrix_to_quaternion"](_frame(approach))
+    log.llm("estimate drawer pull/articulation axis (cabinet centroid -> handle)",
+            inputs="cabinet centroid + handle 3D (agentview[1 frame], single-view -> no depth axis)",
+            decides=f"approach={np.round(approach, 3)}; pull=+{np.round(outward, 3)}")
 
     def tcp():
         return ee() + approach * 0.1034    # panda_hand -> TCP along the approach axis
@@ -185,8 +202,12 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
         return (-0.16 < p[1] < -0.120) and (0.05 < p[2] < 0.125)
 
     t["open_gripper"]()
+    log.local("HORL-RRT/trajopt", "plan transit to clear pre-grasp",
+              inputs="start joints(proprio) + pre pose + agentview depth obstacle cloud[1 frame]",
+              outputs="joint trajectory")
     if not descend_to_pre():
-        log("could not reach a clear pre-grasp; abort (zero disturbance)")
+        log.llm("safety gate: cannot reach a clear pre-grasp -> abort",
+                inputs="proprio(achieved TCP vs pre)", decides="ABORT (no grasp, no pull)")
         rrt(above)
         return {"target": which, "grasped": False}
     if debug:
@@ -201,6 +222,8 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
                                                        # applies the -0.1 hand offset itself)
     seated = False
     for a in range(4):
+        log.local("pyroki-IK", "deterministic IK at bar grasp pose",
+                  inputs="bar pose + current joints(proprio) [no frames]", outputs="joint config")
         try:
             ikj = np.asarray(t["solve_ik"](bar, quat), float)
         except Exception as e:
@@ -209,17 +232,23 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
         for u in np.linspace(0.0, 1.0, 8):            # linear interp over the clear corridor
             t["move_to_joints"](cur * (1 - u) + ikj * u)
         if not on_bar(tcp()):                         # bad IK (warm-start) -> re-descend, re-solve
-            log(f"seat {a}: IK TCP={np.round(tcp(),3)} off-bar -> re-descend")
+            log.llm("evaluate seat result -> re-seat (off-bar)",
+                    inputs="proprio(achieved TCP) [no frames]",
+                    decides=f"seat {a}: TCP={np.round(tcp(),3)} off-bar -> re-descend")
             t["open_gripper"](); descend_to_pre(); continue
         t["close_gripper"]()
         g = grip()
-        log(f"seat {a}: IK TCP={np.round(tcp(),3)} grip={g:.3f} (on-bar)")
+        log.llm("evaluate seat result -> accept / re-seat",
+                inputs="proprio(achieved TCP + closed-grip reading) [no frames]",
+                decides=f"seat {a}: TCP={np.round(tcp(),3)} grip={g:.3f} -> "
+                        f"{'ACCEPT' if g > GRIP_MIN else 're-seat'}")
         if g > GRIP_MIN:
             seated = True
             break
         t["open_gripper"](); descend_to_pre()
     if not seated:
-        log("no safe seat found; abort (no pull, zero disturbance)")
+        log.llm("safety gate: no safe seat found -> abort",
+                inputs="proprio(grip readings over retries)", decides="ABORT (no pull)")
         rrt(above)
         return {"target": which, "handle": mid, "grasped": False}
     if debug:
@@ -236,10 +265,16 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
         return (tcp()[1] - seat_y) * sign
 
     for step in range(10):
+        log.llm("decide pull progress -> continue / re-seat / stop",
+                inputs="proprio(TCP advance + grip) [no frames]",
+                decides=f"step {step}: advanced={advanced()*1000:.0f}mm/{PULL_TRAVEL*1000:.0f}, "
+                        f"grip={grip():.3f}")
         if advanced() > PULL_TRAVEL:
             break
         if grip() < 0.02:                        # bar slipped -> re-seat on the protruding bar
             t["open_gripper"]()
+            log.local("pyroki-IK", "re-seat IK on the now-protruding bar",
+                      inputs="re-bar pose + current joints(proprio) [no frames]")
             # the bar moved +outward with the drawer; deterministic IK re-seat onto it at
             # the bar's z (just behind the current TCP).
             here = tcp()
@@ -255,6 +290,9 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
             if grip() < 0.02:
                 break                            # could not re-seat -> stop (drawer partly open)
         tgt = tcp() + outward * PULL_STEP
+        log.local("HORL-trajopt", "collision-aware +pull step",
+                  inputs="start joints(proprio) + step target + depth obstacle cloud[1 frame]",
+                  outputs="joint trajectory")
         tr, info = planner.plan_trajopt(jts(), tgt, quat, obstacles,
                                         pos_weight=170, terminal_boost=140)
         if np.isfinite(float(info.get("final_cost", -1))):
