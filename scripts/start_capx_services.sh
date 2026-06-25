@@ -101,9 +101,13 @@ if port_up "$MOLMO_PORT"; then
     echo "  ${G}UP${Z}    molmo (port $MOLMO_PORT) — already running, skip"
 elif [[ -n "$MOLMO_VENV" ]]; then
     echo "  ${Y}START${Z} molmo (port $MOLMO_PORT) via vLLM in $MOLMO_VENV"
-    HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}" nohup "$MOLMO_VENV" -m vllm.entrypoints.openai.api_server \
+    # GPU 1 by default (GPU 0 holds SAM3/graspnet); --enforce-eager skips vLLM's
+    # slow first-run cudagraph capture + inductor compile (~20 min) — point-prompt
+    # latency doesn't need it, and startup drops to ~2 min and is far more reliable.
+    CUDA_VISIBLE_DEVICES="${MOLMO_GPU:-1}" HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}" \
+        nohup "$MOLMO_VENV" -m vllm.entrypoints.openai.api_server \
         --model allenai/Molmo2-8B --served-model-name allenai/Molmo2-8B \
-        --port "$MOLMO_PORT" --host 127.0.0.1 --trust-remote-code \
+        --port "$MOLMO_PORT" --host 127.0.0.1 --trust-remote-code --enforce-eager \
         --dtype bfloat16 --max-model-len 8192 --max-num-batched-tokens 16384 \
         --gpu-memory-utilization 0.85 > "$LOGDIR/molmo.log" 2>&1 &
     echo "        pid $!"
