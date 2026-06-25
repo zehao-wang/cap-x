@@ -19,21 +19,19 @@ a grip that is **vertically centered on the bar (TCP z≈0.10)** drags the drawe
 no slip. The earlier "shear" was NOT axial slip — it was seats landing **1–6 cm too
 HIGH** (z≈0.14–0.17) that gripped above the bar / its top edge and held weakly.
 
-### What now works — **cold-runner 4/5 (up from baseline 3/5), all SAFE**
-A redesigned `robust_skill.py` (sensing-only). Official `run_robust.py`, one fresh
-process per seed (`logs/rr4_seed*.log`):
-- **seed 2: SUCCESS −0.160** (disturb 26 mm — over-pull arc grazes the plate)
-- **seed 3: SUCCESS −0.160** (disturb 4.2 mm, clean)
-- **seed 4: SUCCESS −0.160** (disturb 17.9 mm)
-- **seed 5: SUCCESS −0.160** (disturb 13.6 mm) — the seed the old handoff called
-  "safe-unsolvable" now opens.
-- **seed 1: FAIL, disturb 5.1 mm — SAFE** (no good low-z seat this cold run →
-  safe-abort, zero plow), the RNG-unlucky one (below).
-- Warm-harness reproduces **5/5** (≤6.6 mm). The 4/5-vs-5/5 delta is purely the seat
-  RNG, and the per-seed count varies run-to-run — but it is **always SAFE** (rejects
-  bad seats, never plows). Disturbance is up vs the old 3-mm because of the over-pull
-  (a smooth bar slips; the EE must over-travel) grazing the plate — a success/safety
-  knob (`PULL_TRAVEL`) to revisit once the seat is deterministic.
+### What now works — **cold-runner 5/5 (up from baseline 3/5)**
+A redesigned `robust_skill.py` (sensing-only) with the **deterministic IK seat**.
+Official `run_robust.py`, one fresh process per seed (`logs/rr6_seed*.log`):
+- seed 1: **SUCCESS −0.160**, disturb 32.5 mm
+- seed 2: **SUCCESS −0.160**, disturb 11.2 mm
+- seed 3: **SUCCESS −0.160**, disturb 6.1 mm
+- seed 4: **SUCCESS −0.160**, disturb 33.0 mm
+- seed 5: **SUCCESS −0.160**, disturb 2.9 mm
+- **5/5 SUCCESS**, every seed fully open. The IK seat lands on-bar on the first try
+  each time (no RNG), so the cold runner now matches the warm harness.
+- **Remaining issue = SAFETY: plate disturbance 3–33 mm** (the +Y pull arc grazes the
+  flat plate). The seed-to-seed spread tracks the plate's position. This is the one
+  thing left to tighten (the success problem is solved); see the next step.
 
 Key fixes that made the wins possible (all in `robust_skill.py`):
 1. **Gap approach** — descend into the CLEAR gap between the plate's near edge and the
@@ -65,14 +63,23 @@ high arm config (the RRT-to-pre-fail bug) it returns a z≈0.14 solution. So the
 **re-descends + re-solves** if the IK lands high/shallow (`on_bar` check). With the
 robust descend first, the re-solve rarely triggers.
 
-Result with the IK seat: **harness 3/3 (seeds 1,2,4) all SUCCESS** (qpos −0.160),
-disturb 4–23 mm; cold-runner seed 1 ✓ (was failing), seed 3 ✓. Full 5-seed cold
-re-validation (with the ratchet IK re-seat fix) in `logs/rr6_seed*.log`.
+Result with the IK seat: **cold-runner 5/5** (`logs/rr6_seed*.log`, all qpos −0.160).
 
-**Remaining knob: pull disturbance.** A deep IK grip barely slips, so `PULL_TRAVEL`
-is back to 0.22, but the +Y pull arc still grazes the plate (seed 1 ~32 mm; seeds 2–4
-4–9 mm). Lower it further by pulling with the elbow held higher / a shorter travel now
-that the grip is reliable — the main remaining tuning.
+### THE remaining work: cut the plate disturbance (success is solved)
+The +Y pull at handle height sweeps the arm back across the flat plate → 3–33 mm
+plate disturbance (seed-dependent: seeds 5/3 are clean at 2.9/6.1 mm; seeds 1/4 hit
+32–33 mm). Success is no longer the problem; **safety is**. Next-step ideas, in order:
+1. Inspect WHAT touches the plate (wrist+agentview snaps mid-pull) — is it the
+   forearm/elbow sweeping low, or the open fingers on release? (use the interactive
+   harness — it has `snap()`).
+2. If it's the arm arc: bias the pull to keep the elbow up / pull along a higher path
+   while the TCP stays on the handle, or shorten `PULL_TRAVEL` (a deep IK grip barely
+   slips, so it may already reach −0.16 with less travel).
+3. Put the plate explicitly in the pull's collision cloud (it's currently in
+   `obstacles`, but the pull's `pos_weight` may override it — lower it during the pull).
+4. Release + retreat earlier (stop pulling the instant the drawer is open — needs a
+   sensing open-detector, e.g. re-detect the handle moved +Y ~0.15, since qpos is
+   privileged).
 
 ## Files (all in `capx-se/open_drawer/`)
 - `robust_skill.py` — **the deliverable** (sensing-only solve_robust). Gap approach →
