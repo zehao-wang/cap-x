@@ -20,18 +20,27 @@ no slip. The earlier "shear" was NOT axial slip — it was seats landing **1–6
 HIGH** (z≈0.14–0.17) that gripped above the bar / its top edge and held weakly.
 
 ### What now works — **cold-runner 5/5 (up from baseline 3/5)**
-A redesigned `robust_skill.py` (sensing-only) with the **deterministic IK seat**.
-Official `run_robust.py`, one fresh process per seed (`logs/rr6_seed*.log`):
-- seed 1: **SUCCESS −0.160**, disturb 32.5 mm
-- seed 2: **SUCCESS −0.160**, disturb 11.2 mm
-- seed 3: **SUCCESS −0.160**, disturb 6.1 mm
-- seed 4: **SUCCESS −0.160**, disturb 33.0 mm
-- seed 5: **SUCCESS −0.160**, disturb 2.9 mm
-- **5/5 SUCCESS**, every seed fully open. The IK seat lands on-bar on the first try
-  each time (no RNG), so the cold runner now matches the warm harness.
-- **Remaining issue = SAFETY: plate disturbance 3–33 mm** (the +Y pull arc grazes the
-  flat plate). The seed-to-seed spread tracks the plate's position. This is the one
-  thing left to tighten (the success problem is solved); see the next step.
+A redesigned `robust_skill.py` (sensing-only) with the **deterministic IK seat** +
+tuned pull + trajopt retreat. Official `run_robust.py`, fresh process per seed
+(`logs/rr8_seed*.log`): **5/5 SUCCESS, all qpos −0.160**, plate disturbance
+17.7 / 10.7 / 8.9 / 25.4 / 4.2 mm (seeds 1–5). The IK seat lands on-bar on the first
+try every time (no RNG), so the cold runner matches the warm harness.
+
+Three things fixed this session beyond the IK seat:
+- **Tuned pull** (`PULL_TRAVEL` 0.22→0.17, `PULL_STEP`→0.07): a deep centered grip
+  barely slips, so stopping right at the drawer travel keeps the pull arc from
+  sweeping further over the plate (≈32 mm → ≈5–18 mm; one seed still 25 mm).
+- **Trajopt retreat** (was RRT): after the pull the arm sits at the open drawer where
+  RRT reads the start as in-collision and **HANGS** ("start tree could not be
+  initialized") — it blocked whole runs even though the drawer was already open.
+  Trajopt accepts the start and lifts away. (gap H)
+
+**Remaining = SAFETY tail: plate disturbance still spikes to ~25 mm on some seeds**
+(stochastic pull trajopt + the seat brushing the plate ~5 mm on descent). Lower it by:
+(1) keeping the elbow higher / a straighter pull, (2) a sensing open-detector to stop
+the pull the instant the drawer is open, (3) lower `pos_weight` in the pull so the
+plate-in-`obstacles` avoidance dominates. The success problem is solved; this is the
+polish left.
 
 Key fixes that made the wins possible (all in `robust_skill.py`):
 1. **Gap approach** — descend into the CLEAR gap between the plate's near edge and the
