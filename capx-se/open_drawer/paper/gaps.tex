@@ -199,6 +199,19 @@ terminated episode''. Conversely the default \code{max\_steps=120} under-converg
 \emph{silently}. Needs a horizon-aware (time-parameterized, budget-checked) trajectory
 executor and an explicit convergence-failure signal the skill can branch on.
 
+\medskip\noindent\textbf{Cross-suite evidence.} Running the \emph{same} skill on the
+position-perturbed \code{libero\_goal\_swap/task0} (the cabinet is repositioned ---
+handle at $x\!\approx\!0.41$ vs $0.70$ in the base suite) is a clean demonstration. The
+deterministic seat generalized (on-bar grip 0.164 on the first try), but with the default
+30000-step horizon the run died ``executing action in terminated episode'' \emph{mid-pull}:
+the further/deeper cabinet pose makes the blocking pull more step-expensive, and the
+cumulative per-waypoint cost over the ratcheting pull simply does not fit. Raising the
+horizon to 80000 the \emph{identical} skill \textbf{succeeds} --- drawer fully open
+(\code{qpos} $-0.159$), object disturbance 21.9\,mm (wine bottle; bowl/cheese/plate
+$0.0$). So a \emph{correct, safe} skill fails or passes purely on the execution-step budget
+of the position controller --- on a real fixed-horizon eval this is a silent, layout-induced
+failure, not a planning or perception error.
+
 \section{No contact / collision feedback to the skill}
 \flag{} The bottom drawer fails because the hand-collision box hits the table and the gripper
 clips the stacked upper handles and a plate --- but the skill is \textbf{blind} to all of it
@@ -232,6 +245,19 @@ We worked around it by estimating the axis from cabinet-centroid$\to$handle and 
 ``hook and drag'' primitive and integrate grasp selection with the collision world so only
 \emph{reachable} grasps are proposed. (AnyGrasp $+$ a real collision world is the expected
 fix; until then, some initial scenes where graspnet finds no viable grasp are simply skipped.)
+
+\medskip\noindent\textbf{Cross-suite evidence.} On \code{libero\_goal\_task/task0} (with the
+\S\ref{sec:contract} patch the instruction is now ``open the bottom drawer'', matching the
+scored goal), the skill correctly detects the bottom handle at $z = 0.042$ and
+\emph{safe-aborts} --- it cannot reach a clear pre-grasp (the handle sits below the wrist
+floor), so it grasps nothing and returns failure rather than forcing it. Correct behavior,
+but with a sting: the abort logged ``zero disturbance'' while the plate actually moved
+\textbf{36.3\,mm} --- the descend-to-pre fallback trajopt (reporting a $\sim$$2\times10^{9}$
+collision cost) grazed the plate \emph{before} giving up. So even the \emph{abort} path is
+not collision-verified on execution; the skill's safety claim was trusting the planner's
+intent, not its executed motion. This reinforces \S\ref{sec:seat}'s lesson (gate on executed
+sensing, not trajopt cost) and \S9's: \emph{every} stage, including bail-outs, needs a
+guarded/collision-checked executor.
 
 \section{Robustness: a ``success'' that knocks things over is not a solution}
 \flag{} On the \emph{successful} naive middle-drawer run the arm displaced the bowl

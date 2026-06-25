@@ -6,6 +6,47 @@ to (a) find what cap-x lacks and (b) build a robust + SAFE solution. Commits: ol
 ones `[tmp]`, new ones `[auto]` (per AGENT.md). **Start every session by launching
 all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molmo).
 
+## Session 3 (2026-06-25): gaps writeup compiled + other drawer settings probed
+- **cap-x gaps PDF** built: `paper/gaps.tex` + `paper/build.sh` (mirrors
+  `track_judge/paper/`'s tectonic toolchain) → `paper/gaps.pdf`. Synthesizes
+  GAPS.md/DISCUSSION.md/DESIGN_SUMMARY.md. Rebuild: `bash paper/build.sh`.
+- **Tried other drawer settings (generalization).** Drawer tasks in the dev pool:
+  `libero_goal{,_task,_swap}` task0 (middle drawer) and task3 ("open the top drawer
+  and put the bowl inside", a multi-step pick-place — not attempted yet).
+  - **`libero_goal_swap/task0` seed1** (perturbed layout; handle at x≈0.409 vs
+    x≈0.70 in the base suite — cabinet repositioned): the **deterministic IK seat
+    GENERALIZED** — `seat 0` landed on-bar on the FIRST try, grip 0.164, despite the
+    new cabinet pose (`logs/swap0_seed1.log`). But the run **hit the episode horizon
+    mid-pull** ("executing action in terminated episode") = **gap F** (the blocking
+    controller's cumulative per-waypoint cost over the ratcheting pull exceeds the
+    fixed `max_steps`=30000 horizon). Added `--max-steps` to `run_robust.py` to probe
+    this; **at 80000 it SUCCEEDS** (`logs/swap0_seed1_bighorizon.log`): drawer fully
+    open (qpos −0.159), disturbance only **21.9 mm** (wine bottle; bowl/cheese/plate
+    all 0.0). So the failure at 30000 was **pure gap-F horizon exhaustion**, NOT a
+    pull-axis problem — the skill *generalizes* to the repositioned cabinet; the
+    blocking controller's cumulative per-waypoint cost over the ratcheting pull just
+    doesn't fit a 30000-step horizon there (the deeper/further cabinet pose makes the
+    pull more step-expensive). On a real FIXED-horizon eval this correct skill would
+    fail purely on execution-step budget. Strong cross-suite evidence for gap F:
+    cap-x needs a horizon-aware / non-blocking executor (fewer sim-steps per waypoint),
+    or the ratcheting pull needs fewer re-seat cycles.
+  - **`libero_goal_task/task0` seed1** (BDDL patch active → instruction is now
+    `'open the bottom drawer of the cabinet'`, matching the scored goal; metadata-
+    divergence WARNING logged as designed): the skill correctly detects the **bottom**
+    handle @ [0.701,−0.137,**0.042**] and **safe-aborts** ("could not reach a clear
+    pre-grasp") → SUCCESS=False, no grasp (`logs/task0_bottom_seed1.log`). Confirms the
+    bottom drawer is **unreachable** (handle z=0.042 below the ~0.09 wrist floor) — the
+    documented skip case. **New nuance:** the abort logged "zero disturbance" but the
+    plate actually moved **36.3 mm** — the descend-to-pre fallback trajopt (collision
+    cost 1.97e9) grazed the plate *before* giving up. So the "safe abort" path is itself
+    not collision-verified on execution; reinforces "trust executed-sensing, not trajopt
+    cost" and that even abort motions need a guarded/collision-checked executor.
+- Per the standing rule: settings where graspnet/reach finds no viable grasp (awaiting
+  AnyGrasp) are simply skipped (the bottom drawer is one such).
+- **Replays:** previously we saved NO success videos (only text logs + static PNG snaps).
+  Added `--video` to `run_robust.py` (env `enable_video_capture` + `get_recorded_frames`
+  + imageio, same as `harness.py`). Replays land in `replays/`.
+
 ## Where things stand (updated 2026-06-25, session 2)
 Target = `libero_goal/task0` (middle drawer; instruction==goal==middle, reachable).
 Success = drawer qpos < **−0.14**. Solve path is sensing-only; the runner reads

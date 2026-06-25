@@ -38,6 +38,10 @@ def main():
     ap.add_argument("--suite", default="libero_goal")
     ap.add_argument("--task-id", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--max-steps", type=int, default=30000,
+                    help="episode horizon (sim steps); raise to probe gap-F exhaustion")
+    ap.add_argument("--video", default=None,
+                    help="if set, save an agentview replay (mp4/gif) to this path")
     args = ap.parse_args()
 
     rs = _load_pkg()
@@ -46,8 +50,13 @@ def main():
     from capx.integrations.base_api import get_api
 
     env = FrankaLiberoEnv(args.suite, args.task_id, privileged=False,
-                          max_steps=30000, control_freq=20, enable_render=True)
+                          max_steps=args.max_steps, control_freq=20, enable_render=True)
     env.reset(seed=args.seed)
+    if args.video:
+        try:
+            env.enable_video_capture(True, wrist_camera=False)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[video] capture unavailable: {exc!r}", flush=True)
     sim = env.handle.env.sim
     api = get_api("FrankaLiberoApiReducedSkillLibrary")(env)
 
@@ -73,6 +82,18 @@ def main():
         sim.data.xpos[sim.model.body_name2id(o)] - p0[o])) * 1000, 1) for o in objs}
     print(f"\n===== TASK SUCCESS={env.task_completed()}  "
           f"max_object_disturbance={max(disp.values()):.1f}mm  {disp} =====", flush=True)
+
+    if args.video:
+        try:
+            frames = env.get_recorded_frames()
+            if frames:
+                import imageio
+                imageio.mimsave(args.video, frames, fps=20)
+                print(f"[video] replay ({len(frames)} frames) -> {args.video}", flush=True)
+            else:
+                print("[video] no frames captured", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[video] save failed: {exc!r}", flush=True)
 
 
 if __name__ == "__main__":
