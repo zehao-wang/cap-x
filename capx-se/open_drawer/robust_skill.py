@@ -70,10 +70,12 @@ def _mask_pt(t, mask, depth, K, ext):
 PRE_GAP = 0.037          # pre-grasp sits +Y of the bar, in the clear gap behind the plate edge
 STANDOFF_UP = 0.18       # standoff directly above pre-grasp
 GRIP_MIN = 0.05          # closed-grip reading above this => holding the bar
-PULL_STEP = 0.08         # +Y per collision-aware pull step
-PULL_TRAVEL = 0.22       # EE travel that fully opens the drawer (slides 0.16) -- a deep, centered
-                         # IK grip barely slips, so modest over-travel suffices; keeping it tight
-                         # limits how far the pull arc sweeps back over the plate (disturbance).
+PULL_STEP = 0.07         # +Y per collision-aware pull step
+PULL_TRAVEL = 0.17       # EE travel that fully opens the drawer (slides 0.16). A deep, centered
+                         # IK grip barely slips (EE travel ~= drawer travel), so stopping right at
+                         # the drawer's travel reaches the -0.16 stop while keeping the +Y pull arc
+                         # from sweeping further back over the plate -> lower disturbance (measured
+                         # ~5-11 mm at 0.17 vs ~32 mm at 0.22 on the high-disturbance seeds).
 
 
 def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
