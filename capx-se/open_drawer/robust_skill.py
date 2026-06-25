@@ -263,13 +263,18 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
     if debug:
         debug("pulled")
 
-    # ---- safe retreat: release, back off +Y and up, RRT clear of the cabinet ----
+    # ---- safe retreat: release, back off +Y and up, clear of the cabinet ----
+    # Use collision-aware TRAJOPT (not RRT): after the pull the arm sits at the open
+    # drawer where RRT reads the START state as in-collision and HANGS ("start tree
+    # could not be initialized"). Trajopt accepts the start and just lifts away.
     t["open_gripper"]()
-    bk = tcp() + np.array([0.0, 0.06, 0.12]) * np.array([1, np.sign(outward[1] or 1), 1])
-    tr, o = planner.plan(jts(), bk, quat, obstacles)
-    if o["info"]["planned"]:
-        run(tr)
-    rrt(above + np.array([0.0, 0.10, 0.06]))
+    sgn = np.sign(outward[1] or 1)
+    for target in (tcp() + np.array([0.0, 0.06 * sgn, 0.12]),
+                   above + np.array([0.0, 0.10 * sgn, 0.06])):
+        tr, info = planner.plan_trajopt(jts(), target, quat, obstacles,
+                                        pos_weight=120, terminal_boost=80)
+        if np.isfinite(float(info.get("final_cost", -1))):
+            run(tr)
     if debug:
         debug("done")
     return {"target": which, "handle": mid, "grasped": True}
