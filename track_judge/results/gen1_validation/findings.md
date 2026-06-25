@@ -51,6 +51,19 @@ the simulator's **privileged** body position (measuring stick only, never in the
 - `place_in(bowl, plate)` → "bowl 19.2cm from container center; 0% inside" (correct: not placed)
 - `next_to(bowl, plate)` → "gap 19.2cm (need <10cm)" (correct)
 
+## C. Positive done=True on real tracks (guard vs a degenerate judge)
+A/B (above) are not-yet-done / metric cases — a judge that NEVER says done would also pass
+them (the failure mode AGENT.md §7 warns about). `val_positive.py` closes this: it teleports
+the bowl onto the plate over a rendered window, tracks it, and checks the relation FLIPS.
+
+- bowl moved [−0.102, 0.006, 0.898] → onto plate top [0.061, −0.006, 0.938]; tracked final
+  centroid xy=[0.03, −0.008] z=+0.967.
+- `on_top_of(bowl, plate)` → **done=True, progress=1.0**, "on top (dz +5.4cm)". ✅ PASS.
+
+Fix made here: `on_top_of` progress now = fraction of the last-k centroids inside the on-top
+region, so the graded signal AGREES with `done` (it read 0.097 while done=True before — a
+dz-penalty artifact; now 1.0 when seated).
+
 ## Conclusion
 The gen1 design is empirically sound: **a one-line declarative judge gets a correct, metric
 verdict from local models with zero LLM at judgment time.** The ~1–3 cm sensing noise sits

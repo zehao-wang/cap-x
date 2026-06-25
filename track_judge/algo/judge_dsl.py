@@ -103,13 +103,16 @@ def on_top_of(target, reference, *, k=3, xy_tol=0.04, z_gap=0.06):
     region = _aabb([lo[0] - xy_tol, lo[1] - xy_tol, ref_top - 0.01],
                    [hi[0] + xy_tol, hi[1] + xy_tol, ref_top + z_gap])
     on = _lib.persistence_in_region(target, region, k)
+    # progress = fraction of the last-k centroids inside the on-top region, so a graded
+    # signal that AGREES with `done` (≈1 when seated, →0 when not) rather than a dz penalty
+    cents = _centers(target)[-k:]
+    prog = float(np.mean(_lib.points_in_region_3d(cents, region)))
     tc = _centers(target)[-1]
     dz = tc[2] - ref_top
     cx = (lo[:2] + hi[:2]) / 2.0
     dxy = _horizontal(tc, [cx[0], cx[1], 0])
     fb = (f"on top (dz {dz*100:+.1f}cm)" if on
           else f"not seated: dz {dz*100:+.1f}cm, xy off {dxy*100:.1f}cm")
-    prog = float(np.clip(1.0 - abs(dz) / max(z_gap, 1e-6), 0, 1)) if dxy < (hi[0]-lo[0])/2 + xy_tol else 0.0
     return _verdict(on, prog, fb, regions=[region])
 
 

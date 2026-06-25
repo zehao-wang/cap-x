@@ -38,4 +38,12 @@ CHANGELOG: list[tuple[int, str]] = [
         "geometry boundary, neither needs a per-turn VLM): goal[5] push-to-front (proximity, "
         "approx via next_to) and goal[7] turn-on-stove (non-spatial state). self-test passes "
         "(relations + dispatch + all_of). Still PENDING A/B (endpoint)."),
+    (3, "gen3 — POSITIVE done=True validation on real tracks + on_top_of progress fix — offline. "
+        "Guards the degenerate-judge failure mode (a judge that never says done would pass all "
+        "the not-done cases): teleport the bowl onto the plate over a rendered window -> TAPIP3D "
+        "-> on_top_of(bowl,plate) FLIPS to done=True, progress=1.0 (val_positive.py). Fixed "
+        "on_top_of progress to be the last-k region-occupancy fraction so the graded signal "
+        "AGREES with done (was 0.097 while done=True via a dz-penalty artifact; now 1.0 seated). "
+        "judge now verified in all 3 directions on real data: not-done/metric (A,B), done (C). "
+        "Still PENDING A/B (endpoint)."),
 ]

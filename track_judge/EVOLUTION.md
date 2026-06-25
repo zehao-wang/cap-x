@@ -91,4 +91,17 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
 - **下一步 (next):** run the A/B benchmark once :8110 is up; gen3 candidate = proprioceptive
   gripper track for `grasped()` (early-abort on slip). Optional: a `moved_to_region` for goal[5].
 
+### gen3 — positive done=True validation on real tracks + on_top_of progress fix 🟢 OFFLINE-VALIDATED · A/B PENDING
+- **改动 (change):** added `results/gen1_validation/val_positive.py` (teleport bowl onto plate
+  over a rendered window → TAPIP3D → `on_top_of` must flip). Fixed `on_top_of` progress to be
+  the last-k region-occupancy fraction (agrees with `done`).
+- **结果 (result):** `on_top_of(bowl, plate)` flips to **done=True, progress=1.0** on real
+  tracks. The judge is now verified in all three directions on real data: not-done + metric
+  residual (A, B) and done=True (C) — closing the degenerate-judge gap AGENT.md §7 warns about.
+- **教训 (lesson):** a graded `progress` must agree with `done` (it read 0.097 while done=True
+  via a dz-penalty); occupancy-fraction is the consistent form.
+- **下一步 (next):** the judge signal is now validated in all directions; the only thing left
+  for real numbers is the A/B benchmark (blocked on the :8110 Codex CLI endpoint). gen4
+  candidate stays proprioceptive-gripper `grasped()`.
+
 <!-- newest generations go ABOVE this line as they happen -->
