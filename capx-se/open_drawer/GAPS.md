@@ -159,7 +159,15 @@ current stack and reliably opening even a reachable drawer.
 
 ---
 
-## G. Stochastic trajopt seat is not REPEATABLE — the precision-grasp gap  **[flag]** (session 2)
+## G. Stochastic trajopt seat is not REPEATABLE — the precision-grasp gap  **[worked around]** (session 2)
+
+> **Resolution:** replaced the trajopt seat with a **deterministic pyroki `solve_ik`
+> seat** (solve_ik at the bar pose + linear joint interp over the sensing-verified
+> clear corridor). Lands the TCP repeatably deep+centered (z 0.109/0.110/0.110 vs the
+> trajopt's 0.10–0.17); on-bar on the first try on the cold runner. Caveat: pyroki IK
+> accuracy depends on a good warm-start (a high arm config → a z≈0.14 solution), so the
+> skill re-descends + re-solves if the IK lands off-bar. Underlying gap (no first-class
+> deterministic short-range seat primitive) stands; worked around with solve_ik.
 
 The HORL pyroki trajopt is the motion engine. For TRANSIT it's fine. For the final
 ~5 cm **seat** onto a thin handle it is the wrong tool:

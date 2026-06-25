@@ -51,27 +51,28 @@ Key fixes that made the wins possible (all in `robust_skill.py`):
    on grip-loss re-seat on the now-more-protruding bar. Over-pull (0.30 m EE travel)
    so a slipping smooth bar still reaches the −0.16 stop.
 
-### The core remaining gap: **HORL trajopt seat-z variance is RNG-dependent**
-The seat trajopt's landing z **scatters 0.10–0.17 by RNG seed** for the *same* target.
-- A **warm** planner (harness, RNG advanced over many calls) happened to hit low-z
-  seats → **5/5 in-harness** (all seeds, ≤6.6 mm disturb — see below).
-- A **cold** planner (`run_robust`, fresh RNG per process) often hits high-z seats →
-  seeds where the first few tries are high-z either retry a lot or safe-abort. Seed 1
-  is the unlucky one: repeated z≈0.14–0.16 seats + NaN-cascades.
-So success is currently **RNG-gated by the seat**, not by the approach/pull (those are
-solved). The skill is **always SAFE** (rejects bad seats, aborts with 0 disturbance)
-— it never plows — but success is not yet deterministic.
+### SOLVED: the seat is now DETERMINISTIC (pyroki `solve_ik`, not the trajopt)
+The HORL **trajopt** seat's landing z scattered **0.10–0.17 by RNG** (the old gap) —
+the wrong tool for a 5 cm precision seat. **Fix: deterministic IK seat.** The pre→bar
+corridor is sensing-verified clear, so `solve_ik(bar_pose, quat)` + a linear joint
+interp lands the TCP **repeatably DEEP and CENTERED** (y≈−0.137, z≈0.11) — measured
+0.109/0.110/0.110 over 3 reps vs the trajopt's 0.10–0.17. On the cold runner the IK
+seat lands on-bar on the **first try** (seeds 1,2,3 confirmed: TCP=[·,−0.138,0.106] /
+[·,−0.134,0.106] / [·,−0.143,0.106], grip ~0.168).
 
-**Exact next step (to make it deterministic): replace the stochastic trajopt seat with
-a DETERMINISTIC short seat.** The pre→bar corridor is sensing-verified clear, so a
-direct IK at the bar pose (curobo, or HORL `solve()`/a seeded pyroki IK) + linear joint
-interp would seat at a repeatable (y,z) every time, removing the RNG. The trajopt is the
-wrong tool for the final 5 cm precision seat; use it only for transit.
+Caveat found: pyroki IK quality depends on a **good warm-start** — if called from a
+high arm config (the RRT-to-pre-fail bug) it returns a z≈0.14 solution. So the seat
+**re-descends + re-solves** if the IK lands high/shallow (`on_bar` check). With the
+robust descend first, the re-solve rarely triggers.
 
-### In-harness 5/5 proof (warm planner, for reference)
-`SUMMARY3 5/5`: seeds 1–5 all qpos ≤ −0.159, max disturb 6.6 mm. Reproduced via the
-interactive harness (below) with the same logic; the cold runner diverges only on the
-seat RNG.
+Result with the IK seat: **harness 3/3 (seeds 1,2,4) all SUCCESS** (qpos −0.160),
+disturb 4–23 mm; cold-runner seed 1 ✓ (was failing), seed 3 ✓. Full 5-seed cold
+re-validation (with the ratchet IK re-seat fix) in `logs/rr6_seed*.log`.
+
+**Remaining knob: pull disturbance.** A deep IK grip barely slips, so `PULL_TRAVEL`
+is back to 0.22, but the +Y pull arc still grazes the plate (seed 1 ~32 mm; seeds 2–4
+4–9 mm). Lower it further by pulling with the elbow held higher / a shorter travel now
+that the grip is reliable — the main remaining tuning.
 
 ## Files (all in `capx-se/open_drawer/`)
 - `robust_skill.py` — **the deliverable** (sensing-only solve_robust). Gap approach →

@@ -69,18 +69,11 @@ def _mask_pt(t, mask, depth, K, ext):
 # ---- tuned constants (relative to the detected handle; not per-seed magic) ----
 PRE_GAP = 0.037          # pre-grasp sits +Y of the bar, in the clear gap behind the plate edge
 STANDOFF_UP = 0.18       # standoff directly above pre-grasp
-SEAT_DY = -0.023         # seat target Y: past the bar front (walls at the bar; deep target needed)
-SEAT_DZ = -0.020         # seat target Z: bar_z - 2 cm -> TCP lands centered on the bar
-SEAT_DEEP_Y = -0.128     # REQUIRE the seat to land THIS deep (on the bar, not its front tip).
-                         #   A tip grip (TCP ~bar_front, ~-0.119) holds weakly and shears on the
-                         #   pull; only an on-bar grip (TCP <= -0.128) drags the drawer fully open.
-                         #   The trajopt reaches deep only on some random tries -> retry until it does.
-SEAT_COST_MAX = 1e8      # reject only extreme fly-off seats (phantom plate cost can be ~1e6, still fine)
 GRIP_MIN = 0.05          # closed-grip reading above this => holding the bar
-PULL_STEP = 0.09         # +Y per collision-aware pull step
-PULL_TRAVEL = 0.30       # over-pull: a smooth bar slips, so the EE must advance well past the
-                         # 0.16 m drawer travel for the drawer itself to reach the stop. Once the
-                         # drawer bottoms out the grip just releases (harmless).
+PULL_STEP = 0.08         # +Y per collision-aware pull step
+PULL_TRAVEL = 0.22       # EE travel that fully opens the drawer (slides 0.16) -- a deep, centered
+                         # IK grip barely slips, so modest over-travel suffices; keeping it tight
+                         # limits how far the pull arc sweeps back over the plate (disturbance).
 
 
 def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
@@ -186,10 +179,8 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
         return False
 
     def on_bar(p):
-        # accept ONLY a seat that is genuinely ON the bar: deep enough in y AND close to
-        # the bar's z (~0.11). The trajopt's seat z scatters 0.10-0.17 by RNG; a high-z
-        # seat grips above the bar (holds air -> pulls nothing), so reject it and retry.
-        return (-0.16 < p[1] < -0.116) and (0.05 < p[2] < 0.125)
+        # a good seat: deep enough in y (on the bar, not its front tip) AND at the bar's z.
+        return (-0.16 < p[1] < -0.120) and (0.05 < p[2] < 0.125)
 
     t["open_gripper"]()
     if not descend_to_pre():
@@ -199,32 +190,28 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
     if debug:
         debug("pre")
 
-    # ---- seat: land the TCP CENTERED on the bar, reject fly-offs, verify grip ----
-    seat_target = mid + np.array([0.0, SEAT_DY, SEAT_DZ])
+    # ---- seat: DETERMINISTIC IK seat (not the stochastic trajopt, whose landing z
+    # scatters 0.10-0.17 by RNG). solve_ik at the bar pose + a linear joint interp over
+    # the sensing-verified-clear pre->bar corridor lands the TCP repeatably DEEP and
+    # CENTERED (y~-0.137, z~0.11). The IK's accuracy depends on a good warm-start, so if
+    # it lands high/shallow (a bad warm-start) we re-descend to a clean pre and re-solve.
+    bar = np.array([mid[0], mid[1] - 0.008, mid[2]])   # bar center (TCP target; solve_ik
+                                                       # applies the -0.1 hand offset itself)
     seated = False
-    nan_streak = 0
-    for a in range(12):
-        if abs(tcp()[2] - pre[2]) > 0.06:        # drifted high after a retry -> re-descend
-            descend_to_pre()
-        tr, info = planner.plan_trajopt(jts(), seat_target, quat, obstacles,
-                                        pos_weight=450, terminal_boost=450)
-        c = float(info.get("final_cost", -1))
-        if not np.isfinite(c):                   # trajopt diverged to NaN -> re-seed from a fresh pre
-            nan_streak += 1
-            log(f"seat {a}: cost=nan -> re-descend")
-            if nan_streak >= 3:
-                descend_to_pre(); nan_streak = 0
-            continue
-        nan_streak = 0
-        if c >= SEAT_COST_MAX:
-            log(f"seat {a}: cost={c:.0f} (fly-off garbage) -> skip"); continue
-        run(tr)
-        if not on_bar(tcp()):                    # shallow tip / high-z seat -> recover & retry
-            log(f"seat {a}: TCP={np.round(tcp(),3)} not-on-bar -> recover")
+    for a in range(4):
+        try:
+            ikj = np.asarray(t["solve_ik"](bar, quat), float)
+        except Exception as e:
+            log(f"seat {a}: solve_ik failed {e!r} -> re-descend"); descend_to_pre(); continue
+        cur = jts()
+        for u in np.linspace(0.0, 1.0, 8):            # linear interp over the clear corridor
+            t["move_to_joints"](cur * (1 - u) + ikj * u)
+        if not on_bar(tcp()):                         # bad IK (warm-start) -> re-descend, re-solve
+            log(f"seat {a}: IK TCP={np.round(tcp(),3)} off-bar -> re-descend")
             t["open_gripper"](); descend_to_pre(); continue
         t["close_gripper"]()
         g = grip()
-        log(f"seat {a}: cost={c:.0f} TCP={np.round(tcp(),3)} grip={g:.3f} (on-bar)")
+        log(f"seat {a}: IK TCP={np.round(tcp(),3)} grip={g:.3f} (on-bar)")
         if g > GRIP_MIN:
             seated = True
             break
@@ -251,14 +238,17 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
             break
         if grip() < 0.02:                        # bar slipped -> re-seat on the protruding bar
             t["open_gripper"]()
-            # the bar moved +outward with the drawer and now protrudes further (easier to
-            # seat). Re-seat just behind the current TCP, deep, at the bar's z.
+            # the bar moved +outward with the drawer; deterministic IK re-seat onto it at
+            # the bar's z (just behind the current TCP).
             here = tcp()
-            redep = np.array([here[0], here[1] - 0.05 * sign, mid[2] + SEAT_DZ])
-            tr, info = planner.plan_trajopt(jts(), redep, quat, obstacles,
-                                            pos_weight=450, terminal_boost=450)
-            if np.isfinite(float(info.get("final_cost", -1))):
-                run(tr)
+            rebar = np.array([here[0], here[1] - 0.05 * sign, mid[2]])
+            try:
+                ikj = np.asarray(t["solve_ik"](rebar, quat), float)
+                cur = jts()
+                for u in np.linspace(0.0, 1.0, 6):
+                    t["move_to_joints"](cur * (1 - u) + ikj * u)
+            except Exception:
+                pass
             t["close_gripper"]()
             if grip() < 0.02:
                 break                            # could not re-seat -> stop (drawer partly open)
