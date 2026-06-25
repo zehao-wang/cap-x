@@ -42,7 +42,7 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
 - **教训 (lesson):** why it accepted/rejected; the root cause the tracking-viz showed.
 - **下一步 (next):** the binding axis now + the next hypothesis it suggests.
 
-### gen1 — declarative goal-relation DSL (weak-LLM-friendly judge authoring) ⏳ PENDING-EVAL
+### gen1 — declarative goal-relation DSL (weak-LLM-friendly judge authoring) 🟢 SIGNAL VALIDATED · A/B PENDING
 - **改动 (change):** new `algo/judge_dsl.py` — a DECLARATIVE relation layer so a *weak*
   runtime LLM writes the per-turn judge in ONE line instead of raw numpy over `coords`.
   Agent names a goal RELATION + OBJECTS in plain words:
@@ -53,17 +53,26 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
   object on frame 0 → grid tracks seeded in that mask → `[T,Nt,3]`; graceful whole-frame
   fallback when SAM is down (never crashes the judge). Rewrote `algo/judge_prompt.py` to make
   the one-liner the PRIMARY path and raw-`ctx` code only an escape hatch.
-- **结果 (result):** NOT yet benchmarked — the runtime LLM endpoint (:8110, mid-migration to
-  the Codex CLI server) and the TAPIP3D server are both down, so no A/B numbers. Offline
-  validation passes: `judge_dsl` self-test (all 8 relations + dispatch), import/plumbing,
-  and the SAM-down → whole-grid fallback path.
+- **结果 (result):** the judge SIGNAL PATH is validated on real libero data (no A/B yet — the
+  runtime LLM endpoint :8110 is mid-migration to the Codex CLI server). See
+  `results/gen1_validation/findings.md`:
+  - (A) **plain-word → local SAM** resolves distinct objects at score **0.58–0.93** (plate
+    0.92, bowl 0.92, bottle 0.93, drawer-handle 0.79) while failures sit ≤0.08 (robot gripper
+    0.010) → added a **MIN_SEG_SCORE=0.30 gate** so a wrong low-score mask is rejected, not tracked.
+  - (B) **full chain on real data** (176 dense frames → TAPIP3D world tracks): a plain-word
+    object's tracked **world centroid lands 0.6–2.7 cm from its GT pose** (plate 0.6 cm, wine
+    1.7 cm, bowl 2.7 cm), and the DSL relations read the scene correctly (handle "moved 0.2 cm
+    of ~15 cm"; bowl "19.2 cm from plate, 0% inside"). Noise ≪ DSL thresholds.
+  - offline: `judge_dsl` self-test (all 8 relations + dispatch), import/plumbing, SAM-down
+    whole-grid fallback all pass.
 - **教训 (lesson):** the north-star ("make a weak model succeed") is an *authoring-ergonomics*
   problem as much as a geometry one — the win is collapsing the judge from "write correct 3D
   numpy" to "name a relation + objects". The metric `feedback` residual (e.g. "4.0cm from
   container center") is what makes the verdict drive the NEXT code revision, not just FINISH.
-- **下一步 (next):** bring up SAM3 + TAPIP3D; validate named-object resolution on a real libero
-  frame (crux: plain-word name → local SAM mask on a real scene); then run the A/B benchmark
-  vs the VDM baseline. Consider 2-condition goals (open+place) and a `ctx.state` open-baseline
-  for `closed`.
+- **下一步 (next):** (1) run the A/B benchmark vs the VDM baseline once :8110 is up (Codex CLI
+  server) — the only thing blocking real success+speed numbers. (2) gen2: take the gripper
+  trajectory for `grasped()` from **proprioception** (SAM can't resolve "robot gripper", 0.010),
+  exposing an end-effector track on `ctx`. (3) consider 2-condition goals (open+place) and a
+  `ctx.state` open-baseline for `closed`.
 
 <!-- newest generations go ABOVE this line as they happen -->

@@ -63,10 +63,17 @@ class _Ctx:
 
     # ── named-object resolution (local SAM model, NOT an LLM) ────────────────────
     _segment_fn = None  # lazy, shared per ctx
+    # Min SAM confidence to TRUST a named-object mask. Validated on a real libero
+    # scene: distinct objects (plate/bowl/bottle/handle/cabinet) score 0.58-0.93,
+    # while failed resolutions (robot gripper 0.01, cheese 0.076) sit far below —
+    # so a ~0.3 gate cleanly rejects garbage masks instead of tracking them.
+    MIN_SEG_SCORE = 0.30
 
-    def segment(self, text):
+    def segment(self, text, *, min_score=None):
         """Segment a NAMED object on frame 0 via the local SAM3 service → bool mask
-        [H, W], or None if SAM is unavailable / finds nothing. No LLM involved."""
+        [H, W], or None if SAM is unavailable / finds nothing / is below the confidence
+        gate (a low-score mask is worse than no mask — it tracks the wrong region). No
+        LLM involved."""
         if self._segment_fn is None:
             try:
                 from capx.integrations.vision.sam3 import init_sam3
@@ -84,6 +91,11 @@ class _Ctx:
         if not results:
             return None
         best = max(results, key=lambda r: r.get("score", 0.0))
+        gate = self.MIN_SEG_SCORE if min_score is None else min_score
+        if float(best.get("score", 0.0)) < gate:
+            print(f"[track-judge] segment({text!r}) low confidence "
+                  f"{best.get('score', 0.0):.3f} < {gate}; not trusting this mask")
+            return None
         return np.asarray(best["mask"], dtype=bool)
 
     def points_of(self, text):
