@@ -1,0 +1,325 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[htt]{hyphenat}
+\setlist{itemsep=2pt,topsep=3pt}
+\sloppy
+\emergencystretch=3em
+
+\newcommand{\patched}{\textcolor{teal}{\textbf{[patched]}}}
+\newcommand{\flag}{\textcolor{orange}{\textbf{[flag]}}}
+\newcommand{\built}{\textcolor{blue}{\textbf{[built]}}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{What cap-x Lacks: Gaps Found by Dogfooding\\
+a Drawer-Opening Skill on LIBERO-PRO}}
+\author{cap-x-se / self-evolve dogfooding}
+\date{\today \quad\textcolor{gray}{\small(living draft --- derived from
+\texttt{capx-se/open\_drawer/})}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We probe what the cap-x agent framework is missing by \emph{dogfooding}: hand-authoring
+a LIBERO drawer-opening skill using only cap-x's legitimate perception + planning
+vocabulary (agentview / wrist RGB-D $+$ proprioception in, joint actions out; \emph{no}
+privileged simulator state on the solve path), running it live, and recording every place
+the stack fell short. The exercise both (a) opens the drawer robustly and safely
+---\textbf{a cold-start runner now succeeds 5/5} (\code{qpos} $0\!\to\!-0.160$, object
+disturbance 4--25\,mm), up from a 3/5 naive baseline that plowed through the scene
+(bowl $\sim$210\,mm)---and (b) surfaces a coherent set of framework gaps. The headline
+gap: cap-x has \textbf{no deterministic short-range ``seat'' primitive}; its only motion
+engine is a stochastic trajectory optimizer whose final-grasp landing height scatters by
+RNG, so precision grasping is non-repeatable. Beyond that we find a self-inconsistent
+task/eval contract, a motion stack of half-wired pieces (a collision-aware planner that had
+never run from the reduced API), an execution model that fights the fixed eval horizon, no
+contact/collision feedback to the skill, and no headless multi-round execution loop. Legend
+throughout: \patched{} fixed this session; \flag{} needs a decision; \built{} new tooling
+added.
+\end{abstract}
+
+\section{Setup: the dogfooding contract}
+The task is the LIBERO \code{open\_the\_middle\_drawer\_of\_the\_cabinet} scenario
+(\code{libero\_goal} task 0; success $=$ drawer \code{qpos} $< -0.14$). The hard rules
+(from \code{AGENT.md}) are the point of the exercise:
+\begin{itemize}
+  \item \textbf{No privileged state on the solve path.} Object/joint ground truth a real
+        robot cannot read is forbidden; everything is estimated from cameras $+$
+        proprioception. Privileged reads are allowed \emph{only} in the runner, for scoring.
+  \item \textbf{Success is necessary but not sufficient --- it must be SAFE.} The skill must
+        not collide with or disturb other objects; the runner reports task success
+        \emph{and} object disturbance. Safety dominates success: fail safely rather than
+        succeed unsafely.
+  \item \textbf{No overfitting} to a single task/seed; closed-loop on sensing feedback.
+        Multi-step interaction (drive a segment, observe, drive the next) and the wrist
+        eye-in-hand camera are encouraged.
+\end{itemize}
+The legitimate vocabulary --- SAM3 text segmentation, depth$\to$3D, Contact-GraspNet,
+pyroki/CuRobo IK and motion, the blocking joint controller, gripper control --- is
+\emph{sufficient in principle}: from perception alone we detect the three handles, pick
+``middle'' from the instruction, estimate the prismatic axis, grasp, and pull the drawer
+fully open. The primitives are sound; the gaps are in how they are assembled, observed, and
+made repeatable.
+
+\section{The headline gap: no deterministic short-range seat}
+\label{sec:seat}
+cap-x's only motion engine is the HORL/pyroki \textbf{trajectory optimizer} (trajopt). For
+long-range \emph{transit} it is fine. For the final $\sim$5\,cm \emph{seat} --- dropping the
+gripper precisely onto a thin handle bar --- it is the wrong tool, and this was the single
+root cause of unreliable success.
+
+\begin{itemize}
+  \item \textbf{Non-repeatable landing.} The \emph{same} seat target lands the TCP at
+        $z$ scattering \textbf{0.10--0.17 by RNG seed}. The middle handle is a horizontal
+        D-bracket bar at $z\!\approx\!0.110$; only a vertically centered grip
+        ($z\!\approx\!0.10$) drags the drawer. A landing 1--6\,cm high grips \emph{above}
+        the bar and pulls nothing. With a warm planner (RNG advanced) we hit good seats
+        $\to$ 5/5 in-harness; with a cold planner (one process per seed) the seat RNG gated
+        success.
+  \item \textbf{Untrustworthy cost.} The trajopt intermittently returns NaN final cost
+        (diverged) and a \emph{phantom} $\sim$$10^{10}$ collision cost for a gripper passing
+        7\,cm \emph{above} a flat object whose real disturbance is $\sim$3\,mm. The cost
+        cannot be a safety gate.
+\end{itemize}
+
+\noindent\patched{} (worked around). We replaced the trajopt seat with a
+\textbf{deterministic} \code{solve\_ik} seat: solve IK at the bar pose, then linearly
+interpolate joints over the pre$\to$bar corridor (verified clear by the sensing point cloud).
+This lands the TCP repeatably deep and centered (measured $z = 0.109/0.110/0.110$ over three
+reps vs the trajopt's 0.10--0.17), and on the cold runner it lands on-bar on the \emph{first
+try} every seed. Caveat: pyroki IK quality depends on a good warm-start --- called from a
+high arm config it returns a $z\!\approx\!0.14$ solution --- so the seat re-descends and
+re-solves if it lands off-bar.
+
+\medskip\noindent\textbf{What cap-x needs:} a first-class deterministic short-range seat
+primitive (direct IK at the grasp pose $+$ collision-checked linear interp over a clear
+corridor). The planner is right for transit and wrong for the precision seat; the framework
+should ship both.
+
+\section{The task / eval contract is not self-consistent}
+\label{sec:contract}
+LIBERO-PRO's \code{\_task} variant perturbs the BDDL. For
+\code{open\_the\_middle\_drawer\_of\_the\_cabinet} we found three disagreeing sources of
+truth (Table~\ref{tab:contract}). \code{load\_libero\_task} \emph{deliberately} fed the
+agent the suite-metadata language (``middle''), but \code{check\_success()} scores the BDDL
+goal (``bottom''). \textbf{Following the instruction can never pass}, and the entire
+\code{\_task}/\code{\_swap} arm is silently mis-scored. Verified: opening
+\code{middle\_level} $\to$ \code{check\_success() = False}; setting
+\code{bottom\_level} $= -0.16$ $\to$ \code{True}.
+
+\begin{table}[h]\centering
+\begin{tabular}{ll}
+\toprule
+source & value \\
+\midrule
+filename & \code{open\_the\_middle\_drawer\dots} \\
+BDDL \code{(:language \dots)} & \textbf{``open the bottom drawer of the cabinet''} \\
+BDDL \code{(:goal \dots)} & \code{(Open wooden\_cabinet\_1\_\textbf{bottom}\_region)} \\
+suite metadata \code{task.language} & \textbf{``open the middle drawer of the cabinet''} \\
+\bottomrule
+\end{tabular}
+\caption{Three disagreeing ``truths'' for one perturbed task.}
+\label{tab:contract}
+\end{table}
+
+\noindent\patched{} \code{load\_libero\_task} now reads the BDDL \code{(:language \dots)}
+(the same source as the scored goal), prefers it, and warns when it diverges from suite
+metadata. Non-perturbed suites are unaffected. \flag{} This flips the instruction shown to
+the agent across every perturbed task --- it needs confirmation that BDDL-as-truth is the
+intended scoring for the PRO suites. \textbf{Framework invariant:} instruction and reward
+must come from one source, and the loader should \emph{assert} they agree (or log loudly).
+
+\section{The motion stack is a collection of half-wired pieces}
+A capability the agent is \emph{told} it has but that errors on first call is worse than not
+having it. The only collision-aware planner (CuRobo) had never run from the reduced API:
+
+\begin{enumerate}
+  \item \patched{} \textbf{\code{get\_ee\_pose} never existed.}
+        \code{update\_curobo\_world\_with\_object} and \code{plan\_with\_grasped\_object}
+        call \code{self.get\_ee\_pose()}, but no class defined it (the in-repo example codes
+        call it too --- they could never have run). Added
+        \code{FrankaLiberoApiReduced.get\_ee\_pose()} reading \code{robot\_cartesian\_pos}
+        (real-robot legitimate).
+  \item \patched{} \textbf{warp API drift.} Vendored CuRobo
+        \code{geom/sdf/world\_mesh.py} calls \code{wp.torch.device\_from\_torch}, removed in
+        warp 1.14. Every collision-world build raised \code{AttributeError}. Added a compat
+        shim.
+  \item \patched{} \textbf{Not exposed.} \code{plan\_grasp\_trajectory} /
+        \code{plan\_with\_grasped\_object} / \code{execute\_joint\_trajectory} /
+        \code{parse\_grasp\_poses\_for\_curobo} were commented out of \code{functions()}.
+        Exposed once the above made them work.
+\end{enumerate}
+
+\noindent After the fixes the CuRobo IK path works and is \textbf{accurate ($\sim$5\,mm)},
+far better than pyroki for low grasps. Remaining issues:
+
+\begin{itemize}
+  \item \flag{} \textbf{Collision-aware reach-into-container fails.}
+        \code{plan\_grasp\_trajectory(use\_world\_collision=True)} returns
+        \code{GRAPH\_FAIL} / ``Start or End state in collision'' for a handle adjacent to the
+        cabinet mesh (home config flagged in-collision; goal grazes the scene mesh). Workable
+        only collision-off. Needs better scene-collision ignoring / sphere-buffer tuning.
+  \item \flag{} \textbf{\code{solve\_ik} silently substitutes orientation.} It tries the
+        requested quaternion, then silently falls back to top-down / 45$^\circ$ / side and
+        returns whatever solves --- the caller cannot tell which it got. For a directional
+        drawer grasp this breaks Cartesian continuity. Want a \code{strict=True} mode (raise
+        instead of re-orienting) or return the achieved orientation.
+  \item \flag{} \textbf{pyroki IK is inaccurate at low/awkward poses.} The soft
+        least-squares solver left $\sim$5\,cm error at the low handle ($z\!\approx\!0.04$),
+        grasping above it; CuRobo IK hit 5\,mm. Route precision moves through CuRobo IK, or
+        tighten the pyroki cost/iterations.
+  \item \flag{} \textbf{RRT to a near-structure goal fails silently --- and hangs.}
+        \code{planner.plan(\dots)} to a pre-grasp near the cabinet intermittently returns
+        not-planned with ``RRTConnect: start tree could not be initialized'' (start config
+        reads in-collision against the depth cloud). The caller gets a silent no-op and,
+        unless it \emph{verifies} the achieved pose, proceeds from the wrong place (stranded
+        high $\to$ a too-high seat). Worse: after the pull, with the arm parked at the open
+        drawer, RRT reads the \emph{start} as in-collision and \textbf{hangs the whole run}
+        though the drawer is already open. We worked around both by retrying/verifying and by
+        using trajopt for the retreat. Needs a reliable near-contact RRT or a documented
+        ``verify the move landed'' contract.
+  \item \flag{} The HTTP CuRobo client (\code{capx/integrations/motion/curobo.py}) is
+        \textbf{dead code}; the pyroki \code{/plan} route silently ignores obstacles. One
+        motion facade with a tested contract should subsume these, and the dead paths should
+        be deleted.
+\end{itemize}
+
+\section{Execution model fights the fixed-horizon eval}
+\flag{} \code{move\_to\_joints\_blocking} spends up to \code{max\_steps} sim-steps
+\emph{per waypoint}. \code{execute\_joint\_trajectory(subsample=1, max\_steps=400)} over a
+30-waypoint plan blew the default episode horizon $\to$ robosuite ``executing action in
+terminated episode''. Conversely the default \code{max\_steps=120} under-converged (joints
+0.39\,rad short, $\sim$5\,cm off) until raised to $\sim$250--400, and it stops short
+\emph{silently}. Needs a horizon-aware (time-parameterized, budget-checked) trajectory
+executor and an explicit convergence-failure signal the skill can branch on.
+
+\section{No contact / collision feedback to the skill}
+\flag{} The bottom drawer fails because the hand-collision box hits the table and the gripper
+clips the stacked upper handles and a plate --- but the skill is \textbf{blind} to all of it
+(we saw it only via privileged \code{sim.data.contact}). With perception only, the skill
+cannot distinguish ``didn't reach'' from ``reached but blocked''. Expose the proprioceptive
+collision signals a real robot also has --- commanded-vs-achieved pose error, joint-effort /
+contact spikes, gripper-didn't-close-on-anything --- as first-class API outputs, and let the
+planner plan against the \emph{observed} scene mesh so it routes around obstacles instead of
+\code{GRAPH\_FAIL}-ing because the goal grazes a mesh.
+
+\section{Control mode: position-only, no compliance}
+\flag{} The deepest blocker for the (unreachable) bottom drawer is the control mode. cap-x
+drives a \textbf{blocking \code{JOINT\_POSITION} controller} against a \textbf{coarse gripper
+collision box} (half-extent 0.104). Measured floor: the wrist cannot descend below
+$z\!\approx\!0.09$ near the table, but the bottom handle is at $z = 0.042$ --- so the
+end-effector physically cannot reach it from the front/side, and top-down is blocked by the
+stacked upper drawers. Every primitive (CuRobo, pyroki IK, hook/drag, graspnet) hits this
+same wall. Trained LIBERO policies open it because they use \textbf{compliant OSC} that
+pushes through soft table/cabinet contacts a position controller treats as hard stops.
+Expose an operational-space / impedance mode (or a contact-tolerant guarded-move primitive);
+this is likely the single most important missing capability for low/cluttered targets.
+
+\section{Grasp synthesis is too weak for thin/cluttered handles}
+\flag{} Contact-GraspNet on a thin handle and a top-down heuristic do not cover a low handle
+wedged above a table, below stacked handles, with a plate in front; graspnet returns only
+low-confidence / degenerate grasps there. cap-x also has \emph{no} primitive for a
+front/horizontal grasp or for estimating an articulation axis --- PCA plane-fit on the
+cabinet points gives the wrong axis ($-X$; truth $+Y$) because depth sees front$+$top faces.
+We worked around it by estimating the axis from cabinet-centroid$\to$handle and then
+\emph{probing} (pull a little, re-observe the handle's 3D displacement). Add a non-prehensile
+``hook and drag'' primitive and integrate grasp selection with the collision world so only
+\emph{reachable} grasps are proposed. (AnyGrasp $+$ a real collision world is the expected
+fix; until then, some initial scenes where graspnet finds no viable grasp are simply skipped.)
+
+\section{Robustness: a ``success'' that knocks things over is not a solution}
+\flag{} On the \emph{successful} naive middle-drawer run the arm displaced the bowl
+$\sim$210--240\,mm, cream cheese $\sim$100\,mm, plate $\sim$40\,mm --- a real-robot failure.
+Causes and findings:
+\begin{itemize}
+  \item Collision-off motion plows through the scene; the front-grasp corridor passes right
+        over the bowl in front of the cabinet.
+  \item Collision-aware CuRobo works but is finicky: default robot spheres flag the start
+        in-collision ($\to$\code{GRAPH\_FAIL}); shrinking spheres plans but then the
+        under-sized model grazes obstacles for real. Full-size $+$ larger
+        \code{robot\_distance\_threshold} both plans and cuts disturbance to $\sim$29\,mm in
+        isolation.
+  \item But it is non-deterministic in the full pipeline: the joint-space plan to the IK
+        solution (\code{plan\_single\_js}) isn't world-collision-checked the way the pose plan
+        is, so the executed path still sometimes grazes the bowl ($\sim$120\,mm). The
+        collision guarantee is only as strong as the weakest stage.
+  \item A single-view world mesh (marching cubes from one agentview depth) underestimates
+        partially-occluded objects, so even a correct planner routes too close.
+  \item The pull is not collision-aware/constrained and over-pulls past the drawer limit.
+\end{itemize}
+Improvements: (a) one collision-aware facade whose \emph{every} stage (IK seed, joint plan,
+Cartesian pull) is world-checked; (b) a multi-view (agentview$+$wrist) \emph{fused} collision
+world; (c) obstacle-aware grasp/approach selection; (d) object disturbance reported as a
+first-class eval metric alongside \code{check\_success}, so ``robust'' is measured, not
+assumed.
+
+\section{Tooling we had to build}
+\begin{itemize}
+  \item \built{} \textbf{Headless skill runner.} Every skill ran inside the LLM
+        \code{exec()} loop; there was no clean ``inject \code{functions()}, run code, report
+        \code{check\_success()}'' entrypoint. We built one (\code{harness.py} /
+        \code{run\_robust.py}) --- also the shape of the self-evolve Benchmark Evaluator's
+        \code{eval\_fn} and of regression tests.
+  \item \built{} \textbf{Multi-round sim-driving loop.} cap-x had no way to ``run a segment
+        $\to$ observe sensing$+$GT $\to$ write/run the next segment'' against a live env while
+        keeping the (expensive, $\sim$2\,min compile) planner warm. We built
+        \code{interactive.py} $+$ \code{ictl.sh}: load env $+$ planner once, then exec Python
+        snippets from a file inbox in a persistent namespace with \code{reset\_env(s)} for the
+        reset-on-collision rule. Nearly every design discovery came from it.
+  \item \built{} \textbf{Depth$\to$collision-world HORL planner} (\code{horl\_planner.py}):
+        HORL RRT$+$trajopt wrapped for cap-x, collision world built from the agentview depth
+        cloud; fixed horizon $+$ fixed sphere pool $\Rightarrow$ JAX compiles once then
+        $\sim$0.6\,s/solve.
+  \item \flag{} Ergonomic foot-guns: the control-API ctor eagerly warms up pyroki (needs the
+        server even for skills that never use IK); the pyroki server has no \code{/health}
+        route (404); raw obs depth is $(H,W,1)$ while the reduced API squeezes to $(H,W)$;
+        the in-repo \code{*\_CODE} examples call functions not in the current
+        \code{functions()} (example rot).
+\end{itemize}
+
+\section{What we added over stock cap-x to reach 5/5}
+The win came from one decisive change plus the supports that let it land safely every time
+(detail in \code{DESIGN\_SUMMARY.md}):
+\begin{enumerate}
+  \item \textbf{Deterministic IK seat} (\S\ref{sec:seat}) --- replaced the stochastic trajopt
+        seat. This is what took success from 3/5 to a deterministic 5/5.
+  \item \textbf{Depth-point-cloud collision world} $+$ HORL planner so transit routes
+        \emph{around} the scene objects instead of through them ($\sim$210\,mm $\to$ tens of
+        mm).
+  \item \textbf{Sensing-based safety gate}, not the planner's internal cost: accept a seat by
+        the executed TCP ($\code{on\_bar}$) and gripper reading, not by trajopt cost
+        (which false-positives).
+  \item \textbf{Pose-verified descend-to-pre} (RRT silent-fail fallback) and \textbf{trajopt
+        retreat} (RRT-hang fix).
+  \item \textbf{Geometry-aware grasp}: recognize the D-bracket bar (perpendicular to the
+        $+Y$ pull), center the grip vertically on the bar, descend through the clear gap
+        between the plate edge and the handle, and tune the pull to stop right at the drawer
+        travel.
+\end{enumerate}
+
+\section{Prioritized recommendations}
+\begin{enumerate}
+  \item \textbf{One consistent task/eval contract} --- single source for instruction $+$
+        reward, asserted at load (\S\ref{sec:contract}).
+  \item \textbf{One tested motion facade with a headless runner} --- IK, free-space plan,
+        collision-aware plan, \emph{and a deterministic short-range seat}; CI smoke test that
+        plans$+$executes one grasp; delete the dead paths (\S\ref{sec:seat}, \S4).
+  \item \textbf{Contact/collision feedback $+$ observed-scene collision planning} (\S6),
+        plus an \textbf{operational-space / compliant control mode} (\S7).
+  \item \textbf{A small articulated-manipulation atomic library} ---
+        \code{estimate\_front\_normal}, \code{front\_grasp}, \code{probe\_prismatic\_axis},
+        \code{pull\_open} --- exactly the atoms this task needed (\S8).
+  \item \textbf{Object disturbance as a first-class eval metric} alongside success (\S9).
+\end{enumerate}
+The perception $+$ planning \emph{ingredients} are good; they are not yet assembled into a
+reliable, observable, eval-consistent control loop. With the above, both of cap-x's stated
+north-stars --- benchmark accuracy and faster human-in-the-loop success --- get materially
+easier.
+
+\end{document}
