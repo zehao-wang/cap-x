@@ -45,12 +45,11 @@ The call RETURNS the verdict the agent acts on:
 - progress is a graded distance-to-goal; feedback is a METRIC residual you can act on next
   turn (e.g. "target 4.0cm from container center"), not a vague opinion.
 
-If the goal is two conditions, evaluate two relations and combine, e.g.:
-    a = J.judge(ctx, "opened", target="drawer handle")
-    b = J.judge(ctx, "place_in", target="bowl", reference="drawer")
-    return {"done": a["done"] and b["done"], "abort": a["abort"] or b["abort"],
-            "progress": 0.5*(a["progress"]+b["progress"]),
-            "feedback": a["feedback"] + " | " + b["feedback"]}
+If the goal is TWO conditions ("open the drawer AND put the bowl inside"), use all_of —
+each sub-goal is (relation, {kwargs}); done = all done, abort = any abort:
+    return J.all_of(ctx,
+        ("opened",   {"target": "drawer handle", "travel": 0.15}),
+        ("place_in", {"target": "bowl", "reference": "drawer"}))
 
 ----- ESCAPE HATCH: only if no relation fits, write raw geometry over `ctx` -----
   ctx.coords [T,N,3] world-frame metres tracks · ctx.visibs [T,N] · ctx.rgb [T,H,W,3] ·

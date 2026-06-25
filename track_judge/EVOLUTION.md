@@ -75,4 +75,20 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
   exposing an end-effector track on `ctx`. (3) consider 2-condition goals (open+place) and a
   `ctx.state` open-baseline for `closed`.
 
+### gen2 — `all_of` multi-condition helper + DSL coverage map 🟢 OFFLINE-VALIDATED · A/B PENDING
+- **改动 (change):** (1) `judge_dsl.all_of(ctx, (rel, kwargs), ...)` AND-combines relations so
+  2-condition goals are still one call (done=all, abort=any, progress=mean). Prompt updated to
+  use it. (2) `track_judge/COVERAGE.md` — mapped every base dev task to a relation.
+- **结果 (result):** quantified compatibility (the user's "兼容性强"): **place_in / on_top_of /
+  opened cover 28/30 dev tasks** — all 10 `libero_object` (place_in basket), all 10
+  `libero_spatial` (on_top_of plate), 8/10 `libero_goal`. Only 2 residuals, both the anticipated
+  geometry boundary and neither needing a *per-turn* VLM: goal[5] "push to front of stove"
+  (proximity → approx `next_to`) and goal[7] "turn on the stove" (non-spatial state). self-test
+  (relations + dispatch + all_of) passes.
+- **教训 (lesson):** the spatial qualifiers in libero_spatial ("the bowl between the plate and
+  the ramekin") are *grounding*, not judgment — the per-turn state test is identical for all 10,
+  which is why so few relations generalize. The VDM is structurally redundant for ~93% of tasks.
+- **下一步 (next):** run the A/B benchmark once :8110 is up; gen3 candidate = proprioceptive
+  gripper track for `grasped()` (early-abort on slip). Optional: a `moved_to_region` for goal[5].
+
 <!-- newest generations go ABOVE this line as they happen -->

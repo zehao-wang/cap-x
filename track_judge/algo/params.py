@@ -29,4 +29,13 @@ CHANGELOG: list[tuple[int, str]] = [
         "centroid lands 0.6-2.7cm from GT object pose, well under DSL thresholds; DSL relations "
         "read the real scene correctly. FINDING: 'robot gripper' unresolvable by SAM (0.010) -> "
         "gen2 should take the gripper traj from proprioception for grasped(). NEXT: run A/B."),
+    (2, "gen2 — all_of() multi-condition helper + DSL coverage map (COVERAGE.md) — offline. "
+        "Mapped every base task of the dev suites to a relation: place_in covers all 10 "
+        "libero_object (place in basket), on_top_of covers all 10 libero_spatial (bowl on "
+        "plate), and place_in/on_top_of/opened cover 8/10 libero_goal -> 28/30 dev tasks with "
+        "THREE relations. all_of(ctx, (rel,kwargs), ...) AND-combines for 2-condition goals "
+        "like goal[3] 'open the top drawer and put the bowl inside'. Residuals (anticipated "
+        "geometry boundary, neither needs a per-turn VLM): goal[5] push-to-front (proximity, "
+        "approx via next_to) and goal[7] turn-on-stove (non-spatial state). self-test passes "
+        "(relations + dispatch + all_of). Still PENDING A/B (endpoint)."),
 ]

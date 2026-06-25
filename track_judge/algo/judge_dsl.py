@@ -255,6 +255,32 @@ def judge(ctx, relation: str, *, target: Optional[str] = None,
     return fn(*args, **kwargs)
 
 
+def all_of(ctx, *specs) -> Dict[str, Any]:
+    """AND-combine several relations into one verdict (for multi-condition goals).
+
+    Each ``spec`` is ``(relation, kwargs_dict)``, e.g. for
+    "open the top drawer and put the bowl inside":
+
+        return J.all_of(ctx,
+            ("opened",   {"target": "drawer handle", "travel": 0.15}),
+            ("place_in", {"target": "bowl", "reference": "top drawer"}))
+
+    done = ALL done · abort = ANY abort (a failure in any sub-goal stops early) ·
+    progress = mean · feedback/regions = joined.
+    """
+    parts = [judge(ctx, rel, **kw) for rel, kw in specs]
+    if not parts:
+        return _verdict(False, None, "all_of: no sub-goals given")
+    progs = [p["progress"] for p in parts if p["progress"] is not None]
+    return {
+        "done": all(p["done"] for p in parts),
+        "abort": any(p["abort"] for p in parts),
+        "progress": float(np.mean(progs)) if progs else None,
+        "feedback": " | ".join(p["feedback"] for p in parts),
+        "regions": [r for p in parts for r in p.get("regions", [])],
+    }
+
+
 def _resolve(ctx, text: Optional[str]):
     """Named object → [T,Nt,3] trajectory. Whole-grid fallback (never raises)."""
     if text is None:
@@ -334,4 +360,19 @@ if __name__ == "__main__":
     assert vj["done"], vj
     assert "unknown relation" in judge(_Stub(), "frobnicate", target="bowl")["feedback"]
 
-    print("judge_dsl self-test: all relations + dispatch OK")
+    # all_of: multi-condition goal (open drawer AND place bowl) — AND semantics
+    class _Stub2:
+        coords = tgt
+        state: dict = {}
+        def points_of(self, text):
+            return {"bowl": tgt, "plate": ref, "drawer handle": h}.get(text)
+    combo = all_of(_Stub2(),
+                   ("opened", {"target": "drawer handle", "travel": 0.15}),
+                   ("place_in", {"target": "bowl", "reference": "plate"}))
+    assert combo["done"] and "|" in combo["feedback"], combo
+    combo2 = all_of(_Stub2(),
+                    ("opened", {"target": "drawer handle", "travel": 1.0}),  # too-far travel → not done
+                    ("place_in", {"target": "bowl", "reference": "plate"}))
+    assert not combo2["done"], combo2
+
+    print("judge_dsl self-test: all relations + dispatch + all_of OK")
