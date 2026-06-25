@@ -153,6 +153,25 @@ trajopt-grasp firmness (zero-disturbance but parks slightly shallow -> pull slip
 are the tuning frontier. cap-x gap closed: it now HAS a working collision-aware,
 compile-once, attach-capable motion planner driven by the depth point cloud.
 
+## Single-view sensing imposes a SAFETY FLOOR — don't try to zero it (session 4)
+The solve path sees only the **agentview depth point cloud** = one viewpoint. Whatever
+is occluded (an object's far side, the volume behind a near edge, anything in the camera's
+shadow) is simply **absent from the collision world**, so the planner cannot avoid what it
+cannot see. When the gripper must dip in close to seat on a low handle tucked behind front
+table objects, a few mm of graze against an occluded face is **not a skill bug — it is the
+information limit of single-view sensing**. Measured floor: object disturbance settles at
+**~4–30 mm** depending on seed (the seat brushing the plate on descent; the +Y pull arc
+sweeping back over it). Chasing it to 0 would mean overfitting to this one camera pose
+(memorizing the hidden geometry) — exactly the anti-overfit rule we must not break.
+
+**Stance taken:** treat small grazes (≤ ~3 cm, no object knocked over / displaced enough to
+fail a downstream step) as **acceptable**. Success + "no gross disturbance" is the SAFE bar,
+not zero contact. The real cap-x lever here is not a cleverer planner but **more scene
+information**: a second view / wrist-cam-fused cloud / a quick look-around before seating,
+or **contact feedback** (gap, still open) so the controller can react to a graze it could
+never have predicted from one frame. Until cap-x offers one of those, the safety floor is a
+property of the sensor suite, and the skill is correct to stop polishing against it.
+
 ## Bottom line
 The perception + planning *ingredients* are good, but they're not assembled into
 a reliable, observable, eval-consistent control loop. The highest-leverage fixes

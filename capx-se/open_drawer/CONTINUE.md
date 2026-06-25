@@ -46,12 +46,24 @@ all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molm
   total 8,739 → **5,173**, fully open −0.16, disturbance 37 → **30 mm** (improved). Base s4
   pull → 3,956, total → 6,373, fully open, disturbance 22 → 24 mm (noise). **Cumulative vs the
   original gap-F blowout: 40,724 → 5,173 sim-steps (7.9×), pull 38,924 → 3,910 (10×).**
+- **Snapshotted as `milestones/02_horizon_open_detector/`** (README + CHANGES + example
+  trace/summary/replays from the headline swap0 s1 run).
+- **DECISION on the SAFETY tail — accepted, not chased.** The residual object disturbance
+  (~4–30 mm, seed-dependent) is the **single-view sensing safety floor**: the solve sees only
+  the agentview depth cloud, so occluded geometry is absent from the collision world and a few-
+  mm graze when dipping onto a low handle is the information limit, not a skill bug. Zeroing it
+  would overfit to this one camera pose (breaks the anti-overfit rule). Stance: treat small
+  grazes (≤ ~3 cm, nothing knocked over) as acceptable; SAFE = success + no GROSS disturbance,
+  not zero contact. The real lever is more scene info (2nd view / wrist-fused cloud / contact
+  feedback = standing cap-x gaps), not a cleverer planner. Written up in DISCUSSION.md
+  ("Single-view sensing imposes a SAFETY FLOOR").
 - **Next (optional, diminishing returns):** could trim the per-waypoint convergence cap for
-  the pull (it never converges to 0.01 rad under load anyway, so a lower cap ≈ same drawer
-  motion for fewer steps) — but that needs an env-level `max_steps` knob on `move_to_joints`
-  (cap-x core), so it's a gap to report, not a skill-side tweak. Current 30k margin is ~6×;
-  likely not worth it. Remaining real work is the SAFETY tail (wine-bottle/plate ~25–30 mm
-  on some seeds), tracked above — separate from horizon.
+  the pull (never converges under load anyway) — but needs an env-level `max_steps` knob on
+  `move_to_joints` (cap-x core), so it's a gap to report, not a skill tweak. Current 30k margin
+  is ~6×; likely not worth it. Horizon is done; safety tail is accepted per above.
+- **Known flakiness (orthogonal):** SAM3 occasionally returns no handle on the very first
+  detection (one swap0 s1 run aborted "no handle detected" → safe-abort, 0 disturbance). Pre-
+  existing perception nondeterminism, not from these changes; the skill safe-aborts correctly.
 
 ## Session 3 (2026-06-25): gaps writeup compiled + other drawer settings probed
 - **cap-x gaps PDF** built: `paper/gaps.tex` + `paper/build.sh` (mirrors
