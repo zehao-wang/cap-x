@@ -85,7 +85,7 @@ def main():
 
     if args.video:
         try:
-            frames = env.get_recorded_frames()
+            frames = env.get_video_frames()
             if frames:
                 import imageio
                 imageio.mimsave(args.video, frames, fps=20)

@@ -100,7 +100,7 @@ def run(suite: str, task_id: int, seed: int, *, use_curobo: bool = True,
 
     if record_video_path:
         try:
-            frames = env.get_recorded_frames()
+            frames = env.get_video_frames()
             if frames:
                 import imageio
                 imageio.mimsave(record_video_path, frames, fps=20)
