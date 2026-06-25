@@ -156,3 +156,43 @@ Net: the skill correctly opens the drawer it is told to (middle), but
 the perturbed scored goal (bottom), and the bottom drawer is additionally
 unreachable. Fixing A makes instruction == goal; C/E/F are what stand between the
 current stack and reliably opening even a reachable drawer.
+
+---
+
+## G. Stochastic trajopt seat is not REPEATABLE — the precision-grasp gap  **[flag]** (session 2)
+
+The HORL pyroki trajopt is the motion engine. For TRANSIT it's fine. For the final
+~5 cm **seat** onto a thin handle it is the wrong tool:
+
+- The same seat target lands the TCP at **z scattering 0.10–0.17 by RNG seed** (and
+  y at the tip −0.119 vs the bar center −0.137). A high-z landing grips *above* the
+  bar and pulls nothing; only a vertically-centered (z≈0.10) grip drags the drawer.
+- It intermittently returns **NaN final_cost** (diverged) and **phantom ~1e10
+  collision cost** for a gripper passing 7 cm *above* a flat object — a real
+  disturbance of only ~3 mm. So the cost cannot be trusted as a safety gate; we gate
+  on the *executed* TCP (sensing/proprioception) + grip instead.
+- Net effect: with a **warm** planner (RNG advanced) we hit good seats → 5/5
+  in-harness; with a **cold** planner (one process per seed) the seat RNG gates
+  success. The skill stays SAFE (rejects bad seats, aborts with 0 disturbance) but
+  is not deterministic.
+
+**What cap-x needs:** a deterministic short-range **seat primitive** — direct IK at
+the grasp pose (curobo / a seeded pyroki IK) + linear joint interp over the
+sensing-verified clear corridor — so precision grasping doesn't ride on trajopt RNG.
+
+## H. RRT-to-a-near-structure goal fails silently  **[flag]** (session 2)
+
+`planner.plan(...)` to a pre-grasp close to the cabinet intermittently returns
+not-planned with `RRTConnect: Motion planning start tree could not be initialized`
+(the start config reads as in-collision against the depth cloud). The caller gets a
+silent no-op and, unless it VERIFIES the achieved pose, proceeds from the wrong
+place (stranded at the high standoff → a too-high seat). Needs either a reliable
+near-contact RRT or a documented "verify the move landed" contract.
+
+## I. No standalone multi-round sim-driving loop  **[built]** (session 2)
+
+cap-x had no way to "run a segment → observe sensing+GT → write/run the next
+segment" against a live env while keeping the (expensive) planner warm. Built
+`interactive.py` + `ictl.sh` (persistent namespace, file-inbox protocol,
+`reset_env(s)` for the reset-on-collision rule). This is also the shape a
+self-evolve interactive evaluator would need.
