@@ -77,6 +77,21 @@ PULL_TRAVEL = 0.17       # EE travel that fully opens the drawer (slides 0.16). 
                          # the drawer's travel reaches the -0.16 stop while keeping the +Y pull arc
                          # from sweeping further back over the plate -> lower disturbance (measured
                          # ~5-11 mm at 0.17 vs ~32 mm at 0.22 on the high-disturbance seeds).
+PULL_MIN_OPEN = 0.11     # once the TCP has advanced past this (drawer ~70% of its 0.16 travel),
+                         # a +Y pull step that no longer advances the TCP means the drawer has hit
+                         # its hard stop -> it is fully open. This is the PROPRIOCEPTIVE open-detector
+                         # (qpos is privileged): we infer "open" from the TCP-advance plateau, not the
+                         # joint. Without it the pull loop keeps issuing full pull steps against the
+                         # already-bottomed drawer -- and EACH wasted step costs ~3.9k sim-steps
+                         # (32 trajopt waypoints x the 120-step convergence cap, which every waypoint
+                         # maxes out because the position controller can't settle while dragging the
+                         # damped drawer). 6 such wasted steps = ~23k sim-steps = gap-F horizon blowout.
+STALL_DELTA = 0.008      # per-step TCP +Y gain below this (after a real pull command) = stalled
+                         # against the drawer's hard stop => stop pulling.
+DRAWER_OPEN_ADV = 0.15   # if the grip is HOLDING the bar and the TCP has advanced ~the full
+                         # drawer travel (slides 0.16; success is qpos<-0.14), the drawer is open
+                         # -> stop. Requiring grip-holding makes the TCP advance reflect real drawer
+                         # motion (a deep centered grip drags ~1:1), so this won't over-read on slip.
 
 
 def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
@@ -271,6 +286,15 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
                         f"grip={grip():.3f}")
         if advanced() > PULL_TRAVEL:
             break
+        # PROPRIOCEPTIVE open-detector (early): grip holding + TCP advanced ~the full drawer
+        # travel => drawer fully open. Stops the loop the instant we're open instead of
+        # grinding through the remaining steps against a bottomed-out drawer.
+        if grip() > GRIP_MIN and advanced() > DRAWER_OPEN_ADV:
+            log.llm("open-detector: grip holding + advanced ~full travel -> stop",
+                    inputs="proprio(TCP advance + grip) [no frames]",
+                    decides=f"step {step}: advanced={advanced()*1000:.0f}mm>{DRAWER_OPEN_ADV*1000:.0f}"
+                            f" grip={grip():.3f} -> drawer fully open, STOP")
+            break
         if grip() < 0.02:                        # bar slipped -> re-seat on the protruding bar
             t["open_gripper"]()
             log.local("pyroki-IK", "re-seat IK on the now-protruding bar",
@@ -289,6 +313,7 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
             t["close_gripper"]()
             if grip() < 0.02:
                 break                            # could not re-seat -> stop (drawer partly open)
+        before = advanced()
         tgt = tcp() + outward * PULL_STEP
         log.local("HORL-trajopt", "collision-aware +pull step",
                   inputs="start joints(proprio) + step target + depth obstacle cloud[1 frame]",
@@ -298,6 +323,16 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
         if np.isfinite(float(info.get("final_cost", -1))):
             run(tr)
         t["close_gripper"]()                     # re-tighten on the bar between steps
+        # PROPRIOCEPTIVE open-detector: a full +Y pull command that, with the grip still
+        # holding, fails to advance the TCP means the drawer has bottomed out -> fully open.
+        # Stop now instead of burning ~3.9k sim-steps/step dragging an already-open drawer.
+        gain = advanced() - before
+        if advanced() > PULL_MIN_OPEN and grip() > GRIP_MIN and gain < STALL_DELTA:
+            log.llm("open-detector: pull stalled at drawer hard stop -> stop",
+                    inputs="proprio(TCP advance gain + grip) [no frames]",
+                    decides=f"step {step}: gain={gain*1000:.0f}mm<{STALL_DELTA*1000:.0f} at "
+                            f"advanced={advanced()*1000:.0f}mm -> drawer fully open, STOP")
+            break
     if debug:
         debug("pulled")
 

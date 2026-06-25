@@ -6,6 +6,42 @@ to (a) find what cap-x lacks and (b) build a robust + SAFE solution. Commits: ol
 ones `[tmp]`, new ones `[auto]` (per AGENT.md). **Start every session by launching
 all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molmo).
 
+## Session 4 (2026-06-25): SOLVED gap-F horizon blowout — pull open-detector (5× fewer sim-steps)
+- **Measured WHERE the horizon goes.** Instrumented `run_robust.py`'s `_dbg` to record
+  `env._sim_step_count` per stage. On the gap-F case (`libero_goal_swap/task0` seed1, the
+  one that needed 80k) the budget was: pre 632, seat 94, **pull 38,924 (95.6%)**, retreat
+  1,074 → total 40,724. The horizon counts EVERY blocking sub-step (the underlying env
+  advances once per `move_to_joints_blocking` inner step), and each waypoint MAXES the
+  120-step convergence cap because the position controller can't settle to 0.01 rad while
+  dragging the damped (50) drawer (38,924/10 steps/32 waypoints ≈ 121 ≈ the cap).
+- **Root cause = no open-detector.** The pull loop ran all 10 steps even though the drawer
+  was fully open (qpos −0.15) by step ~2: TCP advance plateaued at 167–169 mm just under
+  `PULL_TRAVEL`=170, so the existing top-of-loop break never fired. 6 of 10 pull steps
+  (~23k sim-steps) were pure waste dragging an already-bottomed drawer.
+- **Fix (skill-side, sensing-only) in `robust_skill.py`.** Added a PROPRIOCEPTIVE
+  open-detector to the pull loop (qpos is privileged, so infer "open" from the TCP-advance
+  plateau): (a) `DRAWER_OPEN_ADV=0.15` — if the grip is HOLDING and the TCP has advanced
+  ~the full drawer travel, stop (grip-holding makes the advance reflect real drawer motion,
+  so it won't over-read on slip); (b) `STALL_DELTA=0.008` — a full pull command that no
+  longer advances the TCP (with grip holding, past `PULL_MIN_OPEN`) means the drawer hit
+  its hard stop → stop. The `PULL_TRAVEL`=0.17 cap + 10-step loop stay as fallback, so the
+  only new failure mode is stopping too EARLY, which the grip-holding guard prevents.
+- **Verified.** Gap-F case (`libero_goal_swap/task0` s1) now **SUCCEEDS at the original
+  30,000 horizon** (was FAIL, needed 80k): total **8,739 sim-steps** (pull 7,512 — 5.2×
+  fewer), drawer **fully open −0.16**, open-detector fired at step 2 (advanced 158 mm).
+  Base task seeds 3/4/5 all still pass, **fully open −0.16**, ~9.4/9.3/14.4k steps,
+  disturbance 6.7/22.4/12.2 mm (seed 4 IMPROVED from ~32 mm — fewer idle arm sweeps). No
+  regression; the skill now fits a normal LIBERO horizon with >3× margin and generalizes
+  to deeper/repositioned cabinets (stops as soon as it's open, regardless of pull cost).
+- GAPS.md gap F updated: the cap-x-side gap is still real (cap-x needs a horizon-aware /
+  non-blocking executor + per-waypoint convergence-failure signal); this session worked it
+  around at the skill level so the skill fits budget.
+- **Next (optional, more horizon margin for very deep cabinets):** subsample the per-pull
+  trajopt trajectory in `run()` (each waypoint maxes the 120 cap; the pull is a straight
+  +Y drag so every-2nd-waypoint ~halves pull cost) — measure disturbance before/after, the
+  straight pull makes corner-cutting low-risk but disturbance is the gate. Also could trim
+  the per-waypoint cap for the pull (it never converges under load anyway).
+
 ## Session 3 (2026-06-25): gaps writeup compiled + other drawer settings probed
 - **cap-x gaps PDF** built: `paper/gaps.tex` + `paper/build.sh` (mirrors
   `track_judge/paper/`'s tectonic toolchain) → `paper/gaps.pdf`. Synthesizes

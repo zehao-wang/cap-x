@@ -106,13 +106,22 @@ def main():
     t_start = log.t0
     measurements: list[dict] = []  # privileged per-stage measurements (measurement-only)
 
+    _last_steps = {"n": 0}
+
     def _dbg(tag):
         qs = {jn: round(float(sim.data.qpos[a]), 4) for jn, a in level_joints.items()}
         ee = fns["get_observation"]()["robot_cartesian_pos"][:3]
+        # horizon accounting: every blocking sub-step counts against max_steps, so track
+        # the per-stage sim-step delta to see WHERE the budget goes (gap-F diagnosis).
+        nstep = int(getattr(env, "_sim_step_count", 0))
+        d_step = nstep - _last_steps["n"]
+        _last_steps["n"] = nstep
         rec = {"t": round(time.time() - t_start, 2), "stage": tag,
-               "drawer_qpos": qs, "ee": [round(float(x), 3) for x in ee]}
+               "drawer_qpos": qs, "ee": [round(float(x), 3) for x in ee],
+               "sim_steps": nstep, "stage_sim_steps": d_step}
         measurements.append(rec)
-        print(f"  [gt] {tag:<10} drawer_qpos={qs}  ee={np.round(ee, 3)}", flush=True)
+        print(f"  [gt] {tag:<10} drawer_qpos={qs}  ee={np.round(ee, 3)}  "
+              f"sim_steps={nstep} (+{d_step})", flush=True)
 
     result = rs.solve_robust(fns, instruction=instruction, log=log, debug=_dbg)
 

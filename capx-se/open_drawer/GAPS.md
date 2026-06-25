@@ -95,6 +95,25 @@ Also the default `max_steps=120` under-converged (achieved joints 0.39 rad short
 non-blocking controller) so trajectories fit a normal LIBERO horizon, plus a
 convergence-failure signal instead of silently stopping short.
 
+**Session 4 (2026-06-25) — measured + skill-side fix (largely resolved for the pull).**
+Instrumented `run_robust.py` to record `_sim_step_count` per stage. On the gap-F case
+(`libero_goal_swap/task0` seed1) the **pull was 38,924 of 40,724 total sim-steps (95.6%)**
+— and the loop ran all 10 pull steps even though the drawer was fully open by step ~2,
+because the open-detector was missing. Each waypoint maxes the 120-step convergence cap
+(the position controller can't settle to 0.01 rad while dragging the damped drawer:
+38,924 / 10 steps / 32 waypoints ≈ 121 ≈ the cap), so every wasted pull step costs
+~3.9k sim-steps. **Fix (skill-side, sensing-only):** a PROPRIOCEPTIVE open-detector in
+`robust_skill.py` — once the grip is holding AND the TCP has advanced ~the full drawer
+travel (`DRAWER_OPEN_ADV=0.15`), or a pull command stalls against the hard stop
+(`STALL_DELTA`), stop pulling (qpos is privileged, so "open" is inferred from the TCP
+advance plateau, not the joint). Result: the gap-F case now **SUCCEEDS at the original
+30,000 horizon** (8,739 sim-steps total, pull 7,512, drawer fully open −0.16) — was a
+FAIL needing 80k. Base task seeds 3/4/5 all still pass fully-open at ~9–14k steps, with
+no disturbance regression (seed 4 even improved 32→22 mm). **The cap-x-side gap remains
+real** for any skill that issues many waypoints near a load: cap-x still needs a
+horizon-aware / non-blocking executor + a per-waypoint convergence-failure signal, so
+skills don't each have to hand-roll an open/stall detector to stay in budget.
+
 ## G. No articulation-axis estimation primitive  **[worked around in skill]**
 
 Opening a drawer needs the prismatic (slide) axis. cap-x has `select_top_down_grasp`

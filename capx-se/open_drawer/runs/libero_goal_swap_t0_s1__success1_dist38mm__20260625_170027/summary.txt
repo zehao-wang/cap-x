@@ -1,0 +1,89 @@
+libero_goal_swap/task0 seed1
+instruction: 'Open the middle layer of the drawer'
+SUCCESS=True  max_object_disturbance=37.8mm  {'akita_black_bowl': 0.0, 'cream_cheese': 0.0, 'wine_bottle': 37.8, 'plate': 0.0}
+result: {'target': 'middle', 'handle': array([ 0.40876536, -0.15843206,  0.10982165]), 'grasped': True}
+
+dataflow: 14 llm-decision boundaries, 15 local-model calls (models: HORL-RRT/trajopt, HORL-trajopt, SAM3, pyroki-IK)
+
+--- key steps (kind | step | <= data used | -> decision) ---
+  [  0.00s]     building HORL planner (one-time JAX compile ~2 min) ...
+  [  1.32s] LLM interpret instruction -> choose target drawer   <= instruction(text)   -> target='middle' of bottom/middle/top
+  [  1.32s] loc SAM3: segment 'drawer handle'   <= agentview.rgb[1 frame]
+  [  2.79s] LLM pick which detected handle is the target (height-labelled)   <= 3 handle 3D points (agentview[1 frame]) + instruction label   -> 'middle' handle @ [ 0.409 -0.158  0.11 ]
+  [  2.79s] loc SAM3: segment 'wooden cabinet'   <= agentview.rgb[1 frame]
+  [  4.20s] LLM estimate drawer pull/articulation axis (cabinet centroid -> handle)   <= cabinet centroid + handle 3D (agentview[1 frame], single-view -> no depth axis)   -> approach=[-0. -1. -0.]; pull=+[0. 1. 0.]
+  [  4.21s]     approach=[-0. -1. -0.]  obstacle cloud: 5211 pts
+  [  4.51s] loc HORL-RRT/trajopt: plan transit to clear pre-grasp   <= start joints(proprio) + pre pose + agentview depth obstacle cloud[1 frame]
+  [ 53.97s] loc pyroki-IK: deterministic IK at bar grasp pose   <= bar pose + current joints(proprio) [no frames]
+  [ 55.03s] LLM evaluate seat result -> accept / re-seat   <= proprio(achieved TCP + closed-grip reading) [no frames]   -> seat 0: TCP=[ 0.409 -0.157  0.107] grip=0.164 -> ACCEPT
+  [ 55.04s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 0: advanced=0mm/170, grip=0.164
+  [ 55.04s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [236.93s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 1: advanced=80mm/170, grip=0.180
+  [236.94s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [291.91s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 2: advanced=158mm/170, grip=0.181
+  [291.92s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [343.84s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 3: advanced=166mm/170, grip=-0.001
+  [344.23s] loc pyroki-IK: re-seat IK on the now-protruding bar   <= re-bar pose + current joints(proprio) [no frames]
+  [351.03s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [405.21s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 4: advanced=145mm/170, grip=0.345
+  [405.21s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [458.65s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 5: advanced=165mm/170, grip=0.179
+  [458.66s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [510.16s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 6: advanced=167mm/170, grip=0.137
+  [510.16s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [565.40s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 7: advanced=169mm/170, grip=0.067
+  [565.40s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [619.31s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 8: advanced=169mm/170, grip=0.068
+  [619.32s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+  [670.23s] LLM decide pull progress -> continue / re-seat / stop   <= proprio(TCP advance + grip) [no frames]   -> step 9: advanced=167mm/170, grip=0.133
+  [670.23s] loc HORL-trajopt: collision-aware +pull step   <= start joints(proprio) + step target + depth obstacle cloud[1 frame]
+
+--- llm-decision data map (for agent design) ---
+  interpret instruction -> choose target drawer
+      uses: instruction(text)
+      decides: target='middle' of bottom/middle/top
+  pick which detected handle is the target (height-labelled)
+      uses: 3 handle 3D points (agentview[1 frame]) + instruction label
+      decides: 'middle' handle @ [ 0.409 -0.158  0.11 ]
+  estimate drawer pull/articulation axis (cabinet centroid -> handle)
+      uses: cabinet centroid + handle 3D (agentview[1 frame], single-view -> no depth axis)
+      decides: approach=[-0. -1. -0.]; pull=+[0. 1. 0.]
+  evaluate seat result -> accept / re-seat
+      uses: proprio(achieved TCP + closed-grip reading) [no frames]
+      decides: seat 0: TCP=[ 0.409 -0.157  0.107] grip=0.164 -> ACCEPT
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 0: advanced=0mm/170, grip=0.164
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 1: advanced=80mm/170, grip=0.180
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 2: advanced=158mm/170, grip=0.181
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 3: advanced=166mm/170, grip=-0.001
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 4: advanced=145mm/170, grip=0.345
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 5: advanced=165mm/170, grip=0.179
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 6: advanced=167mm/170, grip=0.137
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 7: advanced=169mm/170, grip=0.067
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 8: advanced=169mm/170, grip=0.068
+  decide pull progress -> continue / re-seat / stop
+      uses: proprio(TCP advance + grip) [no frames]
+      decides: step 9: advanced=167mm/170, grip=0.133
+
+--- privileged measurements (measurement-only) ---
+  [ 53.97s] pre        qpos={'wooden_cabinet_1_top_level': 0.0, 'wooden_cabinet_1_middle_level': 0.0, 'wooden_cabinet_1_bottom_level': 0.0} ee=[0.408, -0.007, 0.113]
+  [ 55.03s] grasped    qpos={'wooden_cabinet_1_top_level': 0.0016, 'wooden_cabinet_1_middle_level': -0.001, 'wooden_cabinet_1_bottom_level': 0.0} ee=[0.409, -0.054, 0.107]
+  [725.93s] pulled     qpos={'wooden_cabinet_1_top_level': 0.0016, 'wooden_cabinet_1_middle_level': -0.1527, 'wooden_cabinet_1_bottom_level': 0.0} ee=[0.429, 0.112, 0.091]
+  [740.52s] done       qpos={'wooden_cabinet_1_top_level': 0.0016, 'wooden_cabinet_1_middle_level': -0.16, 'wooden_cabinet_1_bottom_level': 0.0} ee=[0.409, 0.094, 0.349]
