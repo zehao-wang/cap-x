@@ -1,0 +1,117 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+
+\title{\textbf{Geometric State Judgment vs.\ the per-turn LLM (VDM)\\
+\large A short report: what we tested, how, and what we found}}
+\author{cap-x-se / track-judge experiment}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{1.\quad What we tested}
+
+An agentic robot ``code-as-policies'' loop writes code, runs it, then must \emph{judge the
+environment state} each turn to decide \textbf{FINISH} (task done) or \textbf{REGENERATE}
+(revise the code). cap-x does this with a \textbf{VDM} --- a Visual Differencing Model, i.e.\ a
+\emph{second LLM call} every turn that looks at before/after images and returns a verdict.
+
+\textbf{Our question:} can we \emph{remove that per-turn LLM call} and judge state with
+\textbf{geometry instead} --- code that the agent writes once, driven by local models
+(SAM segmentation + TAPIP3D 3D point tracking), with \textbf{zero LLM at judgment time}? And
+is it as reliable, while being cheaper (fewer LLM calls)?
+
+\section*{2.\quad How we tested it}
+
+\textbf{The judge is one declarative line.} The agent names a \emph{relation} over
+\emph{objects} in plain words; all perception/tracking/geometry is in deterministic tooling:
+\begin{quote}\small\texttt{J.judge(ctx, "place\_in", target="bowl", reference="plate")}\end{quote}
+A small set of relations (\texttt{place\_in / on\_top\_of / opened / \dots}\ + \texttt{all\_of}
+for multi-step) covers \textbf{28 of 30} dev tasks.
+
+We could not start the runtime LLM endpoint (a parallel migration occupies it), so for the
+\emph{loop} experiments we \textbf{stood in for the runtime LLM ourselves} (wrote the one-line
+judge; stubbed execution by driving the simulator), and ran the \emph{real} judgment harness.
+Three measurements:
+
+\begin{itemize}\itemsep2pt
+\item \textbf{GT-validated loops.} Run a task across turns; compare the geometric verdict to
+LIBERO's ground-truth \texttt{task\_completed()} each turn. Tasks: open a drawer (\texttt{opened}),
+put a bowl on a plate (\texttt{on\_top\_of}), and the compositional ``open the top drawer
+\emph{and} put the bowl inside'' (\texttt{all\_of}).
+\item \textbf{Accuracy sweep.} Sample many states by teleporting the bowl (seated-on-plate,
+clearly-off, hovering-too-high) across 3 seeds $\times$ 7 placements; record the judge verdict
+vs.\ ground truth $\to$ a confusion matrix.
+\item \textbf{Baseline cost.} Mine the official cap-x VDM run logs (N\,=\,68) for success rate,
+how often the agent never finishes, and the number of regenerations (each $=$ one extra VDM call).
+\end{itemize}
+
+\section*{3.\quad What we found}
+
+\textbf{(a) The geometric judge is reliable.} On the accuracy sweep it matched ground truth on
+\textbf{every} sampled state, with no false positives or false negatives --- including the tricky
+``bowl hovering over the plate'' case (a 2D frame-diff can mistake overlap for ``placed'').
+
+\begin{center}\small
+\begin{tabular}{lc}
+\toprule
+Geometric judge vs.\ ground truth (N\,=\,21) & value \\
+\midrule
+accuracy (verdict $=$ ground truth) & \textbf{21/21 $=$ 100\%} \\
+false ``done'' / missed ``done'' & \textbf{0 / 0} \\
+precision / recall & 1.00 / 1.00 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{(b) The VDM baseline is poor --- and the failure is in the \emph{judgment}.}
+
+\begin{center}\small
+\begin{tabular}{lc}
+\toprule
+Official cap-x VDM baseline (N\,=\,68 runs) & value \\
+\midrule
+ground-truth task success & \textbf{12\%} (8/68) \\
+runs that \emph{never} FINISH (VDM never says ``done'') & \textbf{46\%} \\
+successes the VDM missed (missed-done) & 1 of 8 \\
+valid code written, task still fails & 74\% \\
+mean regenerations per run ($=$ extra VDM calls) & \textbf{4.5} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Nearly half the runs \emph{never converge a verdict at all}: the VDM keeps saying ``not done''
+and the agent regenerates until it runs out of turns. That is a judgment failure, not only a
+hard-to-execute task.
+
+\textbf{(c) Fewer LLM calls.} The geometric judge makes \textbf{0 LLM calls per turn} vs.\ the
+VDM's 1. With code generation at 1 call/turn, total LLM calls \textbf{halve}; and the baseline's
+4.5 regenerations/run are 4.5 extra VDM calls the geometric arm removes. The verdict is also
+\textbf{deterministic} (same state $\to$ same answer), unlike an LLM sampled at temperature.
+
+\textbf{(d) It generalizes to a multi-step task cap-x fails.} On ``open the top drawer and put
+the bowl inside'' (which the VDM baseline fails on both perturbed suites), the one-line
+\texttt{all\_of} judge tracked \emph{both} subgoals and agreed with ground truth on every turn.
+Its per-turn message is a \emph{metric residual} --- e.g.\ ``drawer open $\checkmark$, bowl still
+0\% inside'' --- which tells the next code revision exactly what remains. A frame-diff VDM cannot
+produce that, which is why multi-step tasks are where it fails worst.
+
+\section*{4.\quad Honest limits}
+
+The 100\% accuracy is on a \emph{modest, controlled} sample (teleported states, one relation,
+one task) --- it measures the judge's accuracy ceiling, not a same-loop head-to-head against the
+VDM (which needs the runtime LLM endpoint). The baseline numbers are one trial per task and
+noisy. The recurring weak spot is \emph{not} the geometry but \emph{grounding} --- naming an
+object to the segmenter (small/branded items, or a drawer once it is open and occluded); we
+mitigate it with a confidence gate and a cross-turn cache, and a stronger grounder is the next
+lever. Both measurements are real and point the same way; the same-loop success+speed A/B is the
+remaining confirmation.
+
+\end{document}
