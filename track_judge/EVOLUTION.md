@@ -142,4 +142,18 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
   mechanism is now demonstrated across relations. gen6 candidates: physical-settle stubs so
   placement GT fires for a fully GT-validated on_top_of/place_in loop; proprioceptive `grasped()`.
 
+### gen6 — fully GT-validated on_top_of loop (physics-settled placement stub) 🟢 GT-VALIDATED · A/B PENDING
+- **改动 (change):** `results/gen6_settle/` — the placement stub now teleports the bowl above the
+  plate then lets MuJoCo settle it (robot frozen) so LIBERO's contact-based "on plate" GT predicate
+  actually fires (probed: every teleport height read False; 60 settle steps → True). No algo change.
+- **结果 (result):** `on_top_of(bowl, plate)` vs TRUE GT across a loop — turn1 lift → not-done →
+  REGENERATE (GT False, AGREE); turn2 place+settle → **done → FINISH** (GT `task_completed`=True,
+  AGREE). Two of three core relations now drive the loop correctly against the **real LIBERO
+  success predicate**: `opened` (drawer, gen4) + `on_top_of` (gen6).
+- **教训 (lesson):** LIBERO placement success is a CONTACT predicate, so faithful stubs must settle
+  physics — a teleport-only stub under-reports GT (gen5's task8 caveat) even when the judge is
+  right. `place_in`'s full GT loop just needs a SAM-groundable target (cheese 0.02 = grounding).
+- **下一步 (next):** real A/B numbers still need the runtime LLM endpoint. The judge is now
+  GT-validated across loops for 2/3 core relations; place_in is offline+positive validated.
+
 <!-- newest generations go ABOVE this line as they happen -->

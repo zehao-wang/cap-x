@@ -69,4 +69,13 @@ CHANGELOG: list[tuple[int, str]] = [
         "from background); judge() now returns an HONEST 'could not resolve target/reference' "
         "verdict (progress None). The semantic-grounding boundary reported as uncertainty, not a "
         "fake pass. Self-test still passes."),
+    (6, "gen6 — fully GT-validated on_top_of loop (physics-settled placement stub) — no algo "
+        "change. gen5's bowl-on-plate GT stayed False because LIBERO's predicate needs physical "
+        "CONTACT a teleport can't make (probed: all teleport heights False; 60 settle steps with "
+        "robot frozen -> True). Stub now teleports above the plate then lets MuJoCo settle the "
+        "bowl. RESULT: on_top_of(bowl,plate) vs TRUE GT -> turn1 lift not-done REGENERATE (GT "
+        "False, AGREE); turn2 place+settle done FINISH (GT task_completed True, AGREE). Two of "
+        "three core relations now drive the loop correctly against the real LIBERO success "
+        "predicate: opened (drawer, gen4) + on_top_of (gen6). place_in's full GT loop needs a "
+        "SAM-groundable target (libero_goal cheese scores 0.02 = the grounding residual)."),
 ]
