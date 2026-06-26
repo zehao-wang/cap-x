@@ -104,4 +104,23 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
   for real numbers is the A/B benchmark (blocked on the :8110 Codex CLI endpoint). gen4
   candidate stays proprioceptive-gripper `grasped()`.
 
+### gen4 — arm-B loop with the runtime LLM SIMULATED (no :8110) + 2 harness fixes 🟢 DEMONSTRATED · A/B PENDING
+- **改动 (change):** `results/gen4_loop_demo/` — the experimenter stands in for the cap-agent0
+  runtime LLM (writes the 1-line judge per `judge_prompt`) and runs the REAL `TrackJudge.judge_turn`
+  seam across 2 turns on `libero_goal/task0`, no endpoint. Two `algo/` fixes the loop surfaced:
+  (1) `opened()` keeps a persistent CLOSED baseline in `ctx.state` (multi-turn openness
+  accumulates); (2) `ctx.points_of` densely seeds query points inside a small object's mask and
+  runs a dedicated TAPIP3D track (`ctx.track_mask`) when the 24×24 grid yields <6 hits.
+- **结果 (result):** geometry drives the loop correctly and agrees with GT every turn — turn1
+  short pull → not-done → **REGENERATE**; turn2 full pull → **done** ("moved 15.8cm of ~16cm",
+  prog 0.99) → **FINISH**; judge-vs-GT AGREE both turns. Before fix (2), the small drawer handle
+  read "moved 0.2cm" while fully open (0–1 grid hits → static-background centroid) and the loop
+  FAILED — dense mask-seeding tracks the full 15.8cm.
+- **教训 (lesson):** acting as the runtime LLM (instead of waiting on :8110) was the fastest way
+  to surface gaps a synthetic self-test cannot: small-object seeding and cross-turn baselines.
+  The metric residual ("15.8cm of 16cm") is precisely the actionable signal for the next revision.
+- **下一步 (next):** A/B *numbers* still need the real runtime LLM endpoint; the mechanism is now
+  demonstrated end-to-end on a real task across turns. gen5 candidate: proprioceptive gripper for
+  `grasped()`; extend the simulated-LLM loop to a pick-place task (place_in / on_top_of).
+
 <!-- newest generations go ABOVE this line as they happen -->

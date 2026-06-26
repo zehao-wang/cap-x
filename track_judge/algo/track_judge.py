@@ -98,19 +98,66 @@ class _Ctx:
             return None
         return np.asarray(best["mask"], dtype=bool)
 
+    # set by TrackJudge.judge_turn so points_of can DENSELY re-seed tracks inside a small
+    # object's mask (the global grid is too coarse for e.g. a drawer handle ~0.2% of frame)
+    _track_client = None
+    _world_to_cam = None
+    _track_iters = 6
+    MIN_GRID_PTS = 6  # below this many grid hits, do a dedicated mask-seeded track
+
     def points_of(self, text):
         """Named object → its tracked sub-trajectory ``[T, Nt, 3]`` (world frame).
 
-        Segments the object once (frame 0, local SAM) then selects the grid tracks that
-        started inside that mask. Returns ``None`` when nothing resolves so the DSL falls
-        back to the whole-frame grid instead of crashing the judge."""
+        Segments the object (frame 0, local SAM). If enough whole-frame grid tracks fall
+        inside the mask, use those (cheap); otherwise DENSELY seed query points inside the
+        mask and run a dedicated TAPIP3D track (small objects like a drawer handle get 0-1
+        grid hits, so the grid centroid barely moves — the dedicated track follows them).
+        Returns ``None`` when nothing resolves (DSL then falls back to the whole grid)."""
         mask = self.segment(text)
         if mask is None:
             return None
         idx = self.mask_points(mask)
-        if idx.size == 0:
+        if idx.size >= self.MIN_GRID_PTS:
+            return self.coords[:, idx, :]
+        dense = self.track_mask(mask)            # too few grid hits → dedicated dense track
+        if dense is not None and dense.shape[1] > 0:
+            return dense
+        return self.coords[:, idx, :] if idx.size else None
+
+    def track_mask(self, mask, max_pts=150):
+        """Track points DENSELY seeded inside ``mask`` (frame 0) via a dedicated TAPIP3D
+        call → ``[T, Nt, 3]`` world frame, or None if the tracker context is absent.
+
+        Back-projects masked pixels to world (depth + K + extrinsics, the convention in
+        camera_params: X_cam = depth · K⁻¹[u,v,1], world = cam_to_world · X_cam) and passes
+        them as ``query_point`` [N,4] = [t=0, Xw, Yw, Zw] (TAPIP3D's grid-query format)."""
+        if self._track_client is None or self._world_to_cam is None:
             return None
-        return self.coords[:, idx, :]
+        ys, xs = np.nonzero(np.asarray(mask, dtype=bool))
+        if xs.size == 0:
+            return None
+        if xs.size > max_pts:                    # cap cost: even spread of mask pixels
+            sel = np.linspace(0, xs.size - 1, max_pts).round().astype(int)
+            xs, ys = xs[sel], ys[sel]
+        z = self.depth[0][ys, xs].astype(float)
+        good = z > 1e-3
+        xs, ys, z = xs[good], ys[good], z[good]
+        if xs.size == 0:
+            return None
+        uv1 = np.stack([xs, ys, np.ones_like(xs)], 0).astype(float)   # [3,N]
+        x_cam = (np.linalg.inv(self.K) @ uv1) * z[None, :]            # [3,N]
+        cam_to_world = np.linalg.inv(self._world_to_cam)
+        x_world = cam_to_world[:3, :3] @ x_cam + cam_to_world[:3, 3:4]  # [3,N]
+        q = np.concatenate([np.zeros((1, x_world.shape[1])), x_world], 0).T.astype(np.float32)
+        try:
+            out = self._track_client.track(
+                video=self.rgb, depths=self.depth, intrinsics=self.K,
+                extrinsics=self._world_to_cam, query_point=q, num_iters=self._track_iters)
+        except Exception as e:
+            print(f"[track-judge] dense mask-seeded track failed: {e}")
+            return None
+        c = out.get("coords")
+        return None if c is None else np.asarray(c, dtype=float)
 
 
 class TrackJudge:
@@ -173,6 +220,10 @@ class TrackJudge:
         query_xy = self._grid_query_xy(sub_rgb.shape[1], sub_rgb.shape[2], grid, coords.shape[1])
         ctx = _Ctx(coords=coords, visibs=visibs, rgb=sub_rgb, depth=sub_depth, K=K,
                    query_xy=query_xy, task=task_description, state=state)
+        # let ctx.points_of densely re-seed tracks inside a small object's mask
+        ctx._track_client = client
+        ctx._world_to_cam = world_to_cam
+        ctx._track_iters = self.num_iters
 
         verdict = judge_fn(ctx)
         norm = _normalize_verdict(verdict)

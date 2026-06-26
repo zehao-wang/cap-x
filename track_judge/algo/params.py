@@ -46,4 +46,16 @@ CHANGELOG: list[tuple[int, str]] = [
         "AGREES with done (was 0.097 while done=True via a dz-penalty artifact; now 1.0 seated). "
         "judge now verified in all 3 directions on real data: not-done/metric (A,B), done (C). "
         "Still PENDING A/B (endpoint)."),
+    (4, "gen4 — arm-B loop with the runtime LLM SIMULATED (no :8110) + 2 harness fixes it "
+        "surfaced. Stood in for cap-agent0's LLM: wrote the 1-line judge "
+        "J.judge(ctx,'opened',target='drawer handle') and ran the REAL TrackJudge.judge_turn "
+        "seam across 2 turns on libero_goal/task0. RESULT: geometry drives the loop correctly "
+        "(turn1 short pull -> not-done -> REGENERATE; turn2 full pull -> done 'moved 15.8cm of "
+        "16cm' -> FINISH), judge-vs-GT AGREE both turns. FIX1: opened() keeps a persistent "
+        "CLOSED baseline in ctx.state so multi-turn openness accumulates (was per-window -> "
+        "never reached travel). FIX2: ctx.points_of densely seeds query_points INSIDE a small "
+        "object's mask + dedicated TAPIP3D track (ctx.track_mask) when the 24x24 grid yields "
+        "<6 hits -- a drawer handle (~0.2% of frame) got 0-1 grid hits so its centroid was "
+        "static background ('moved 0.2cm' while fully open); dense seeding tracks the full "
+        "15.8cm. A/B numbers still need the real runtime LLM, but the mechanism is demonstrated."),
 ]

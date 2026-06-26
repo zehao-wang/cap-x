@@ -124,13 +124,23 @@ def next_to(target, reference, *, dist=0.10):
     return _verdict(done, prog, f"horizontal gap {d*100:.1f}cm (need <{dist*100:.0f}cm)")
 
 
-def opened(target, *, travel=0.15, axis=None, open_frac=0.8):
-    """Articulated open: ``target`` (handle/door) displaced ~its full travel this turn.
+def opened(target, *, travel=0.15, axis=None, open_frac=0.8, state=None, key=None):
+    """Articulated open: ``target`` (handle/door) displaced ~its full travel from CLOSED.
+
+    Measures ABSOLUTE openness against a persistent closed baseline (the handle's first-ever
+    observed position, stashed in ``state[key]``) — NOT just this turn's window — so a
+    multi-turn loop that opens the drawer a bit each turn accumulates correctly. With no
+    ``state`` it falls back to this window's frame 0 (single-turn case, unchanged).
 
     ``travel`` is a PHYSICAL constant (metres). ``axis`` optional opening direction; if
     None, uses horizontal displacement magnitude (drawers/doors slide horizontally)."""
     c = _centers(target)
-    disp = c[-1] - c[0]
+    base = c[0]
+    if state is not None and key is not None:
+        if key not in state:
+            state[key] = [float(v) for v in c[0]]   # first sight = closed baseline
+        base = np.asarray(state[key], float)
+    disp = c[-1] - base
     if axis is not None:
         u = np.asarray(axis, float)
         u = u / (np.linalg.norm(u) + 1e-9)
@@ -139,7 +149,7 @@ def opened(target, *, travel=0.15, axis=None, open_frac=0.8):
         along = float(np.linalg.norm(disp[:2]))
     prog = float(np.clip(along / max(travel, 1e-6), 0, 1))
     done = along >= open_frac * travel
-    return _verdict(done, prog, f"handle moved {along*100:.1f}cm of ~{travel*100:.0f}cm")
+    return _verdict(done, prog, f"handle moved {along*100:.1f}cm of ~{travel*100:.0f}cm (from closed)")
 
 
 def closed(target, *, travel=0.15, axis=None, close_frac=0.8, state=None):
@@ -252,8 +262,12 @@ def judge(ctx, relation: str, *, target: Optional[str] = None,
         args = (tgt, grip if grip is not None else tgt)
     else:
         args = (tgt,)
-    if rel in ("closed",):
+    if rel == "closed":
         kwargs["state"] = getattr(ctx, "state", None)
+    if rel == "opened":
+        # persistent closed-baseline so multi-turn opening accumulates (keyed by target)
+        kwargs["state"] = getattr(ctx, "state", None)
+        kwargs["key"] = f"_open_base::{target}"
     kwargs.update(opts)
     return fn(*args, **kwargs)
 
