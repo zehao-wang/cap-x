@@ -175,4 +175,18 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
   still need the runtime LLM endpoint. Further generalization: more compositional/operation-hard
   libero_goal tasks; a stronger grounder (molmo point-prompt) for the SAM-flaky objects.
 
+### gen8 — STATISTICS: the geometric-judge advantage, quantified 📊 · A/B PENDING
+- **改动 (change):** `results/gen8_stats/` — mined the official VDM baseline logs (N=68) and ran a
+  geometric-judge accuracy sweep. No algo change.
+- **结果 (result):** (A) **VDM baseline: 12% GT success, 46% of runs NEVER FINISH** (the VDM never
+  recognizes done → REGEN to horizon — a judgment pathology, not just operation), 1/8 successes
+  missed-done, mean 4.5 regen/run (≈4.5 extra VDM calls), per-suite 6–27%. (B) **geometric judge
+  21/21 = 100% vs GT** (on_top_of, 3 seeds × 7 placements), **false_done 0, missed_done 0**,
+  precision/recall 1.00, correct not-done on a hover-over-plate case.
+- **教训 (lesson):** the advantage is now numeric on three axes — reliability (0 false/missed vs a
+  baseline with ≥1/8 missed-done and 46% non-converging), call count (0/turn vs 1/turn, ~4.5
+  saved regen-calls/run), determinism. Caveat: modest n, controlled states, not a same-loop A/B.
+- **下一步 (next):** the same-loop success+speed A/B (needs the :8110 endpoint) is the remaining
+  confirmation; a larger sweep across relations/tasks would tighten the accuracy CI.
+
 <!-- newest generations go ABOVE this line as they happen -->

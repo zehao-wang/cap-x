@@ -90,4 +90,12 @@ CHANGELOG: list[tuple[int, str]] = [
         "object's last-frame world points are stashed in ctx.state and REUSED when a later turn "
         "can't resolve it (valid: a just-localized static structure hasn't moved). Composition/"
         "geometry is sound; per-frame SAM grounding is the recurring limiter, now mitigated."),
+    (8, "gen8 — STATISTICS: geometric-judge advantage quantified (no algo change). (A) official "
+        "VDM baseline (N=68 logs): GT success 12%, 46% of runs NEVER FINISH (VDM never recognizes "
+        "done -> REGEN to horizon = judgment pathology), 1/8 successes missed-done, mean 4.5 "
+        "regen/run (=~4.5 extra VDM calls), per-suite 6-27%. (B) geometric judge accuracy sweep "
+        "on_top_of(bowl,plate) 3 seeds x 7 placements: 21/21=100% vs GT, false_done=0 missed_done=0, "
+        "precision/recall 1.00, incl. correct not-done on a hover-over-plate case. Advantage: "
+        "reliable (0 false/missed) + 0 LLM calls/turn vs VDM 1/turn + deterministic. Limit: modest "
+        "n, controlled states, not a same-loop A/B (needs endpoint)."),
 ]
