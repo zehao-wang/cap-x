@@ -55,8 +55,27 @@ all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molm
   in seconds via staged-open calib scripts (set drawer qpos, no 2-min compile) instead of
   7-min full runs. The slip only reproduced with a harsh 40-waypoint carry; once it did,
   graspnet candidates were swept fast.
-- **Now running:** the 20-seed benchmark (`logs/bench20.log`, `runs_compose/benchmark_summary.json`).
-  Numbers + per-seed safety to be filled in once it finishes.
+- **20-SEED BENCHMARK (`logs/bench20b.log`, `runs_compose/benchmark_summary.json`):
+  9/20 SUCCESS (bowl in drawer); 7/20 SUCCESS **and** SAFE (≤30 mm other-obj disturbance:
+  seeds 6/7/14/17 ≈0 mm, 5/11/18 ≈30 mm). 1 GROSS-UNSAFE (seed 1: wrist grazed the tall wine
+  bottle → knocked off the table, 2713 mm — `success` but disqualified).** The drawer OPEN
+  succeeds on ALL 20 (proven skill); 100% of the variance is the BOWL pick+place:
+  - ~9 seeds FAIL the PICK (`placed=False`): graspnet candidates all descend-short (collision
+    w/ the open drawer — gap-K) or close empty/over-grip (graspnet nondeterminism — gap-L).
+  - ~2 seeds place `True` but MISS the region (bowl at drawer height but wrong xy: the place
+    offset uses the approximate SAM3 centroid, which is biased per seed).
+  - **A ~30 mm wine-bottle graze recurs** on many seeds — the top-down bowl approach passes
+    close to the tall bottle and collision-UNAWARE `solve_ik` (gap-K) can't route around it.
+  **Headline finding: cap-x's grasp+IK tools can hit a clean SUCCESS (seed 6/17: bowl placed,
+  0 mm disturbance) but can't yet RELIABLY+SAFELY solve a compositional pick-place — the
+  missing piece is collision-aware IK / a collision-checked executor for the pick (the HORL
+  planner has it, but using it desyncs `solve_ik`'s stateful warm-start = gap-I).**
+- **NEXT (user request 2026-06-26): replace Contact-GraspNet with NVlabs GraspGenX**
+  (https://github.com/NVlabs/GraspGenX) for the bowl grasp — gap-L (no grasp-quality/stability
+  score) is the dominant failure; a better grasp generator should lift the pick reliability
+  directly. Integration point: `compose_skill.py` candidate pool (currently
+  `t["plan_grasp"]` ×3 → filter on-bowl/near-rim/downward → verify by descend+grip). Swap the
+  `plan_grasp` source for GraspGenX; keep the same verify-by-grip gate.
 - **How to run:** `MUJOCO_GL=egl HF_HUB_OFFLINE=1 .venv-libero/bin/python
   capx-se/open_drawer/run_compose.py --seeds 1 2 3 --max-steps 40000`. Grounding probes:
   `probe_task3.py` (scene geometry), `probe_target.py` (placement target), `calib_perception.py`
