@@ -6,6 +6,62 @@ to (a) find what cap-x lacks and (b) build a robust + SAFE solution. Commits: ol
 ones `[tmp]`, new ones `[auto]` (per AGENT.md). **Start every session by launching
 all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molmo).
 
+## Session 5 (2026-06-26): COMPOSITIONAL task SOLVED — `libero_goal/task3` "open the top drawer and put the bowl inside" (open → pick → place), seed 1 SUCCESS + 0.0 mm disturbance
+- **New deliverable `compose_skill.py`** (`solve_compose`, sensing-only). Three motor
+  phases from the instruction's two sub-goals: **OPEN** the top drawer (reuses the proven
+  `solve_robust`) → **PICK** the bowl → **PLACE** it in the open drawer. Runner
+  `run_compose.py` (batch over seeds, reuses env+planner across seeds; reports success +
+  SAFETY = disturbance of the OTHER objects, bowl reported separately). Per-run artifacts in
+  `runs_compose/`.
+- **Seed 1: SUCCESS=True, placed=True, max other-object disturbance 0.0 mm** (bowl carried
+  260 mm into the drawer; cheese/bottle/plate all 0.0). Drawer stays fully open through the
+  place. ~7.6k sim-steps total (fits the 30k horizon with >3× margin).
+- **`robust_skill.py` generalized to the TOP drawer**: the seat z-gate is now RELATIVE to the
+  detected handle z (`mid[2]±`), so the same open-skill seats on the top bar (z≈0.18) as well
+  as the middle (z≈0.11). First-try seat, grip 0.17. `solve_robust` now also returns
+  `outward` + `pull_travel` so the place phase can compute the drop GEOMETRICALLY.
+- **The place target is computed from the open-phase geometry, NOT re-sensed.** Re-detecting
+  the open handle post-retreat is fragile (arm occludes / cabinet centroid flips `outward`);
+  instead `drop = handle + outward*travel − outward*0.11` at the handle's z (the success box
+  `wooden_cabinet_1_top_region` rides WITH the drawer and sits ~0.11 m behind the open handle).
+  Verified empirically (`probe_target.py`): a bowl centred in the open region → task_completed.
+- **THE hard part was the bowl pick+carry. Five cap-x lessons, all the hard way:**
+  1. **`solve_ik` is STATEFUL** (warm-starts from the last IK result `api.cfg`, not the
+     current joints). After the open phase + `goto_home`, `api.cfg` is stale at the side-
+     approach seat config → the next solve_ik lands in a bad branch and the descend stalls
+     (hand never reaches the bowl). Fix: reset `fns["solve_ik"].__self__.cfg = None` before
+     the pick so it warm-starts from the rest pose (≈home). **gap-I (new).**
+  2. **`goto_home_joint_position()` from an extended pose only reaches PARTIAL home** in one
+     call (ee≈0.55 vs home 0.37 — `move_to_joints` interp is coarse). Call it until ee
+     converges. **gap-J (new).**
+  3. **`solve_ik` (pyroki server) is COLLISION-UNAWARE** — it returns configs that physically
+     collide with the scene. Grasping the bowl from the cabinet (+x) side made the wrist hit
+     the protruding OPEN drawer and the descend stalled, with NO signal (only a blocked
+     controller). **gap-K (new).**
+  4. **A naive top-down rim PINCH slips the bowl during the carry** (thin-wall line contact
+     can't hold it airborne; grip 0.10 → slides to 0.01). **Contact-GraspNet** finds firm
+     antipodal grasps (grip 0.17–0.23) that HOLD. Use `plan_grasp` → rank downward candidates
+     → accept the first that descends AND grips in [0.05, 0.40]. The hand-built pinch is the
+     wrong tool; graspnet is the right one. **gap-L (new): cap-x has no grasp-quality /
+     stability check; the skill must brute-try candidates and verify by grip reading.**
+  5. **`solve_ik` returns TCP-frame** (robot_cartesian_pos reads ~0.113 above it), and the
+     gripper reads **~1.0 open / ~0.015 closed-empty** (NOT the other way). Both cost runs to
+     re-derive; documented in the constants.
+- **Place mechanics that matter:** carry HIGH above the drop via solve_ik waypoints (NOT the
+  planner — a planner move desyncs `api.cfg`), then descend straight down; a level carry
+  shoves the protruding drawer closed (qpos −0.16→−0.11). Aim the TCP so the BOWL CENTRE
+  (offset (bcen−grasp_p) from the TCP) lands at the region centre.
+- **Fast-iteration methodology (key):** the bowl pick/carry needs NO planner, so it was tuned
+  in seconds via staged-open calib scripts (set drawer qpos, no 2-min compile) instead of
+  7-min full runs. The slip only reproduced with a harsh 40-waypoint carry; once it did,
+  graspnet candidates were swept fast.
+- **Now running:** the 20-seed benchmark (`logs/bench20.log`, `runs_compose/benchmark_summary.json`).
+  Numbers + per-seed safety to be filled in once it finishes.
+- **How to run:** `MUJOCO_GL=egl HF_HUB_OFFLINE=1 .venv-libero/bin/python
+  capx-se/open_drawer/run_compose.py --seeds 1 2 3 --max-steps 40000`. Grounding probes:
+  `probe_task3.py` (scene geometry), `probe_target.py` (placement target), `calib_perception.py`
+  (sensing). All privileged reads in probes/runner are MEASUREMENT-ONLY.
+
 ## Session 4 (2026-06-25): SOLVED gap-F horizon blowout — open-detector + pull subsample (8× fewer sim-steps)
 - **Measured WHERE the horizon goes.** Instrumented `run_robust.py`'s `_dbg` to record
   `env._sim_step_count` per stage. On the gap-F case (`libero_goal_swap/task0` seed1, the

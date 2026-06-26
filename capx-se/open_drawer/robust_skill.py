@@ -230,7 +230,9 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
 
     def on_bar(p):
         # a good seat: deep enough in y (on the bar, not its front tip) AND at the bar's z.
-        return (-0.16 < p[1] < -0.120) and (0.05 < p[2] < 0.125)
+        # z-gate is RELATIVE to the detected handle (generalizes across top/middle/bottom
+        # drawers -- the middle bar is z~0.11, the top bar z~0.18; both must pass).
+        return (-0.16 < p[1] < -0.120) and (mid[2] - 0.06 < p[2] < mid[2] + 0.04)
 
     t["open_gripper"]()
     log.local("HORL-RRT/trajopt", "plan transit to clear pre-grasp",
@@ -366,4 +368,5 @@ def solve_robust(fns, *, instruction="open the middle drawer of the cabinet",
             run(tr)
     if debug:
         debug("done")
-    return {"target": which, "handle": mid, "grasped": True}
+    return {"target": which, "handle": mid, "grasped": True,
+            "outward": outward, "pull_travel": float(advanced())}

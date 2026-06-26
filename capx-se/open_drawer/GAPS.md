@@ -227,3 +227,56 @@ segment" against a live env while keeping the (expensive) planner warm. Built
 `interactive.py` + `ictl.sh` (persistent namespace, file-inbox protocol,
 `reset_env(s)` for the reset-on-collision rule). This is also the shape a
 self-evolve interactive evaluator would need.
+
+---
+
+# Session 5 (2026-06-26): gaps from the COMPOSITIONAL task `libero_goal/task3`
+# "open the top drawer and put the bowl inside" (open → pick bowl → place in drawer)
+
+The drawer-OPEN reused the proven skill (generalized to the top bar). The new PICK +
+PLACE of the akita bowl surfaced five gaps — most cost a 7-min full run each to find
+because the failure (a blocked controller / a silently-stale IK warm-start) gives the
+caller NO signal. All are sensing/IK/grasp infrastructure gaps, not task-specific.
+
+## Pick-1 (CONTINUE "gap-I"): `solve_ik` is STATEFUL and silently desyncs  **[worked around]**
+`solve_ik` warm-starts from the LAST IK result (`api.cfg`), NOT the robot's current joints.
+After the open phase + planner moves (which move the robot via `move_to_joints`, never
+updating `api.cfg`) the warm-start is stale at the side-approach seat config. The next
+`solve_ik(top-down bowl pose)` then converges into a bad branch and a stepwise descend
+does NOTHING (the hand stays at pre-grasp height, closes on air). Reproduced exactly in a
+staged calib. Work-around: reset `fns["solve_ik"].__self__.cfg = None` before the pick so
+it warm-starts from the rest pose (≈home). **cap-x should expose an IK warm-start arg /
+sync `cfg` to the real joints after any `move_to_joints`, or document the statefulness.**
+
+## Pick-2 (CONTINUE "gap-J"): `goto_home_joint_position()` only reaches PARTIAL home  **[worked around]**
+From an extended pose (the open-retreat config) one `goto_home` call lands at ee z≈0.55,
+not the true home z≈0.37 — `move_to_joints`' "rudimentary interpolation" stops short. The
+arm is left in a branch that makes the subsequent descend/carry jerk and slip. Work-around:
+call `goto_home` until ee converges (≤4×). **cap-x's `move_to_joints` needs a real
+trajectory-following blocking move (or `goto_home` should loop to convergence).**
+
+## Pick-3 (CONTINUE "gap-K"): `solve_ik` (pyroki server) is COLLISION-UNAWARE  **[worked around]**
+The `/ik` server gets only the target pose — it knows nothing about the scene. So it
+returns configs that physically collide. Grasping the bowl from the cabinet (+x) side made
+the wrist hit the protruding OPEN drawer; the descend stalled with NO error (only the
+position controller silently failing to converge). Found by sweeping approach directions.
+Work-around: approach the bowl from the robot side; rely on Contact-GraspNet's grasps
+(which happen to approach clear). **cap-x needs collision-aware IK, or the executor needs a
+"commanded-but-not-reached" signal so the caller knows a config was infeasible.**
+
+## Pick-4 (CONTINUE "gap-L"): no grasp-quality check — a naive pinch SLIPS, graspnet holds  **[worked around]**
+A hand-built top-down rim pinch on the akita bowl (thin rounded wall) holds a vertical lift
+but SLIPS during the lateral carry (grip 0.10 → 0.01; bowl falls). No offset/depth/gentleness
+fixed it — line contact can't hold the bowl airborne. **Contact-GraspNet** finds firm
+antipodal grasps (grip 0.17–0.23) that hold through the whole carry. But cap-x gives no
+grasp-stability score usable a priori, and `select_top_down_grasp` doesn't gate on feasible
+descend / firm grip — so the skill must brute-try candidates by score and VERIFY each by
+(a) the descend actually reaching and (b) the closed-grip reading landing in [0.05, 0.40].
+**cap-x should expose graspnet's grasp scores meaningfully + a post-grasp stability check.**
+
+## Pick-5 (frame/convention papercuts): `solve_ik` TCP frame + inverted gripper reading  **[documented]**
+`solve_ik` targets the TCP, but `robot_cartesian_pos` reads ~0.113 above it (panda_hand),
+so naive "command z, read z" is off by the hand offset. And the gripper reads ~1.0 OPEN /
+~0.015 closed-EMPTY (a held thin rim reads ~0.05–0.25 in between) — the opposite polarity to
+the intuition. Both cost a run to re-derive. **cap-x should document these conventions
+(and ideally provide a `get_tcp_pose()` so the caller doesn't carry the 0.113 offset).**
