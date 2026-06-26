@@ -60,7 +60,8 @@ def _recv(sock):
 
 
 def graspgenx_grasps(pc, *, gripper="franka_panda", num_grasps=200, topk=50,
-                     grasp_threshold=-1.0, center=True, socket_path=SOCKET_PATH, timeout=60.0):
+                     grasp_threshold=-1.0, center=True, align_panda=True,
+                     socket_path=SOCKET_PATH, timeout=60.0):
     """Return (grasps (K,4,4) float32, confidences (K,) float32) for object cloud ``pc`` (N,3),
     in the SAME frame as ``pc``. Raises on service error / no connection.
 
@@ -89,7 +90,19 @@ def graspgenx_grasps(pc, *, gripper="franka_panda", num_grasps=200, topk=50,
     c = tensors.get("confidences", np.zeros((0,), np.float32))
     if len(g):
         g[:, :3, 3] += mean          # un-center: grasps come back in the centered frame
+        if align_panda:
+            g[:, :3, :3] = g[:, :3, :3] @ _RZ90   # closing-axis fix (see _RZ90 / below)
     return g, c
+
+
+# GraspGenX's grasp frame closes along +X; the Panda's panda_hand closes along +Y
+# (panda_finger_joint1 axis="0 1 0"). The official end2end Franka config aligns them with a
+# +90deg rotation about the grasp's Z (approach) axis -- grasp_to_tool_transform,
+# quaternion_xyzw [0,0,0.7071,0.7071]. WITHOUT it the gripper VISUALISES correctly (viz uses
+# the GraspGen frame) but the real fingers close along the wrong axis and grasps MISS. With it,
+# the same grasps grip + lift the bowl (verified: 0/N -> N/N lifted). Z is unchanged, so the
+# approach axis (R[:,2]) and the depth/tip offset are the same; only the finger axis rotates.
+_RZ90 = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
 
 
 def ping(socket_path=SOCKET_PATH, timeout=5.0):

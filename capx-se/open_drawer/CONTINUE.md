@@ -88,10 +88,33 @@ all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molm
     and approach-axis retract give dz=0). CGN's grasps from the same partial cloud happened to
     capture the rim antipodally and held -> CGN's 9/20. GraspGenX conditions on OBJECT SHAPE and
     is under-served by a top-only partial cloud.
-  - **NEXT to realise the swap: feed GraspGenX a FULLER bowl cloud** (multi-view / wrist-cam-
-    fused, or symmetry-completed) — its intended input, and a standing cap-x sensing gap. Then
-    wire it into `compose_skill.py`'s candidate pool (replace `t["plan_grasp"]`, keep the
-    verify-by-grip gate) and re-benchmark. The service is left RUNNING (tracked task, GPU0).
+  - **THE bug was the closing-axis transform (found via the official `end2end/robots/
+    franka_panda.yaml`).** GraspGenX's grasp frame closes along +X; the Panda's panda_hand
+    closes along +Y, so the official applies `grasp_to_tool_transform` = **+90deg about the
+    grasp's Z** (quaternion_xyzw [0,0,0.7071,0.7071]). WITHOUT it the gripper VISUALISES
+    correctly (viz uses the GraspGen frame) but the real fingers close wrong-axis and grasps
+    MISS — exactly our symptom. WITH it (R' = R @ Rz(+90)), the SAME grasps go from **0/N ->
+    2/2 grip+lift** the bowl (lift 180-220 mm). Also key (centering, already done): GraspGenX
+    expects an OBJECT-CENTRED cloud (the render script's `T_center = -mean`); feeding a world-
+    offset cloud degrades grasps. The client `graspgenx_client.py` now does BOTH by default
+    (center=True, align_panda=True), returning robot-ready 6-DOF poses; convention recap:
+    approach = R[:,2] (unchanged by Rz90), depth=0.1034, TCP target = pos + approach*depth.
+  - **Validated GGX > CGN where CGN gives NOTHING:** on the flat **plate**, CGN returns
+    `No grasp candidates found` (0); GGX returns **40 grasps conf 0.96-0.98** (sensible rim-edge
+    grasps, render in `ggx_render/plate_grasps_top.png`). This is GGX's real value: recall on
+    objects CGN can't grasp.
+  - **On the BOWL benchmark, GGX is ~comparable to CGN, NOT better.** Integrated behind
+    `COMPOSE_GRASP=ggx` in `compose_skill.py` (pool -> +90 -> near-vertical filter -> verify-by-
+    grip). Staged (approach-axis descend+lift) = **2/8**; CGN = 9/20 (~3.6/8). Reasons: (a) the
+    thin bowl rim is a hard MuJoCo grip target for everything; (b) **`solve_ik` can't hold a
+    TILTED orientation (gap-D), so we must drop GGX's best 6-DOF grasps and keep only near-
+    vertical ones** -- the official executes ALL grasps via **cuRobo** (collision-aware, any
+    orientation) + stiff finger PD. The vertical compose pipeline (built for CGN's top-down
+    grasps) mis-handles even the near-vertical GGX grasps on lift (seed1 slips).
+  - **NEXT to actually beat CGN on the bowl: execute GGX's 6-DOF grasps via a real planner**
+    (cuRobo / HORL trajopt) with approach-axis descend + tool--Z lift (per the official
+    end2end), instead of vertical `solve_ik`. Until then, keep CGN (9/20) for the bowl and use
+    GGX for CGN-failure objects. Service left RUNNING on a PRIVATE socket (GPU0, tracked task).
 - **How to run:** `MUJOCO_GL=egl HF_HUB_OFFLINE=1 .venv-libero/bin/python
   capx-se/open_drawer/run_compose.py --seeds 1 2 3 --max-steps 40000`. Grounding probes:
   `probe_task3.py` (scene geometry), `probe_target.py` (placement target), `calib_perception.py`
