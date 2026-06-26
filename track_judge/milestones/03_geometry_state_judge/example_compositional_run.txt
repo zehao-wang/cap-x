@@ -1,0 +1,43 @@
+Example run — the headline compositional result (milestone 03).
+Task: libero_goal task3 "open the top drawer and put the bowl inside" — a multi-step task the
+official cap-x VDM baseline FAILS on both libero_goal_swap and libero_goal_task.
+
+The runtime LLM (simulated) wrote ONE line:
+    def judge_state(ctx):
+        return J.all_of(ctx,
+            ("opened",   {"target": "top drawer handle", "travel": 0.16}),
+            ("place_in", {"target": "bowl", "reference": "top drawer"}))
+
+Command:
+  MUJOCO_GL=egl HF_HUB_OFFLINE=1 .venv-libero/bin/python \
+    track_judge/results/gen7_compositional/demo_compositional.py /tmp/out
+
+Output:
+  COMPOSITIONAL: open the top drawer AND put the bowl inside  (cap-x VDM FAILS this)
+
+  [turn1: open drawer halfway, bowl outside]
+     judge: done=False prog=0.24 -> REGENERATE
+       subgoal residual :: handle moved 7.8cm of ~16cm (from closed) | target 29.4cm from container center; 0% of pts inside
+     GT(In bowl top_region)=False  bowl_z=0.898  | judge-vs-GT: AGREE
+
+  [turn2: open drawer fully, bowl still outside]
+     judge: done=False prog=0.49 -> REGENERATE
+       subgoal residual :: handle moved 15.8cm of ~16cm (from closed) | target 16.3cm from container center; 0% of pts inside
+     GT(In bowl top_region)=False  bowl_z=0.898  | judge-vs-GT: AGREE
+
+  [track-judge] segment('top drawer handle') low confidence 0.145 < 0.3; not trusting this mask
+  [track-judge] reusing cached resolution for 'top drawer handle' (SAM failed this turn)
+  [track-judge] segment('top drawer') low confidence 0.236 < 0.3; not trusting this mask
+  [track-judge] reusing cached resolution for 'top drawer' (SAM failed this turn)
+  [turn3: place bowl into the open drawer]
+     judge: done=True prog=0.97 -> FINISH
+       subgoal residual :: handle moved 15.8cm of ~16cm (from closed) | in container (xy off 2.4cm)
+     GT(In bowl top_region)=True  bowl_z=1.071  | judge-vs-GT: AGREE
+
+Reading it:
+- turn 2 is the compositional signal a frame-diff VDM cannot give: opened subgoal essentially
+  done (15.8/16 cm), place_in not (bowl 0% inside) -> all_of correctly NOT done, residual says
+  exactly what remains ("drawer open, now place the bowl").
+- turn 3 needed the cross-turn cache: SAM dropped "top drawer"/"top drawer handle" below the gate
+  once the drawer was open+occluded; the judge reused the turn-2 localization -> place_in fired.
+- judge-vs-GT AGREE on all three turns; zero LLM at judgment time.
