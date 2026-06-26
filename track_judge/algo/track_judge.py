@@ -112,17 +112,41 @@ class _Ctx:
         inside the mask, use those (cheap); otherwise DENSELY seed query points inside the
         mask and run a dedicated TAPIP3D track (small objects like a drawer handle get 0-1
         grid hits, so the grid centroid barely moves — the dedicated track follows them).
-        Returns ``None`` when nothing resolves (DSL then falls back to the whole grid)."""
+
+        Cross-turn cache: SAM-by-text is state-dependent (e.g. a drawer resolves when closed
+        but drops below the gate once it is open + occluded). When resolution succeeds we
+        stash the object's last-frame world points in ``ctx.state``; when a later turn fails
+        to resolve it, we REUSE that last-known position (a static trajectory) instead of
+        giving up — valid because a structure that was just localized has not teleported.
+        Returns ``None`` only when it was never resolved (DSL → honest 'could not resolve')."""
         mask = self.segment(text)
         if mask is None:
-            return None
+            return self._cached_points(text)
         idx = self.mask_points(mask)
         if idx.size >= self.MIN_GRID_PTS:
-            return self.coords[:, idx, :]
-        dense = self.track_mask(mask)            # too few grid hits → dedicated dense track
-        if dense is not None and dense.shape[1] > 0:
-            return dense
-        return self.coords[:, idx, :] if idx.size else None
+            traj = self.coords[:, idx, :]
+        else:
+            dense = self.track_mask(mask)        # too few grid hits → dedicated dense track
+            traj = dense if (dense is not None and dense.shape[1] > 0) else \
+                (self.coords[:, idx, :] if idx.size else None)
+        if traj is None or traj.shape[1] == 0:
+            return self._cached_points(text)
+        self._cache_points(text, traj)
+        return traj
+
+    def _cache_points(self, text, traj):
+        if self.state is None:
+            return
+        self.state.setdefault("_pts_cache", {})[text] = \
+            [[float(v) for v in p] for p in np.asarray(traj)[-1]]
+
+    def _cached_points(self, text):
+        pts = (self.state or {}).get("_pts_cache", {}).get(text)
+        if not pts:
+            return None
+        print(f"[track-judge] reusing cached resolution for {text!r} (SAM failed this turn)")
+        arr = np.asarray(pts, dtype=float)       # [N,3] last-known world position
+        return np.repeat(arr[None], self.coords.shape[0], axis=0)  # static [T,N,3]
 
     def track_mask(self, mask, max_pts=150):
         """Track points DENSELY seeded inside ``mask`` (frame 0) via a dedicated TAPIP3D

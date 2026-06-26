@@ -78,4 +78,16 @@ CHANGELOG: list[tuple[int, str]] = [
         "three core relations now drive the loop correctly against the real LIBERO success "
         "predicate: opened (drawer, gen4) + on_top_of (gen6). place_in's full GT loop needs a "
         "SAM-groundable target (libero_goal cheese scores 0.02 = the grounding residual)."),
+    (7, "gen7 — COMPOSITIONAL generalization 'open the top drawer and put the bowl inside' "
+        "(libero_goal task3; cap-x VDM FAILS it on both swap+task) + cross-turn resolution "
+        "cache. One all_of(opened top-handle, place_in bowl->top-drawer) judges both subgoals. "
+        "3-turn loop, judge-vs-GT AGREE every turn: t1 open-half+bowl-out not-done (residual "
+        "'handle 7.8/16cm | bowl 29.4cm 0% inside'); t2 open-full+bowl-out not-done ('handle "
+        "15.8/16cm | bowl 0% inside' -- the compositional signal: drawer done, bowl remaining); "
+        "t3 bowl-in done FINISH ('in container 2.4cm'), GT True. FIX: SAM-by-text is "
+        "STATE-DEPENDENT (top drawer 0.33->0.24 once open+occluded) -> first run failed t3 with "
+        "honest 'could not resolve'. Added cross-turn cache in ctx.points_of: a resolved "
+        "object's last-frame world points are stashed in ctx.state and REUSED when a later turn "
+        "can't resolve it (valid: a just-localized static structure hasn't moved). Composition/"
+        "geometry is sound; per-frame SAM grounding is the recurring limiter, now mitigated."),
 ]

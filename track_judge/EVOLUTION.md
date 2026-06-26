@@ -156,4 +156,23 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
 - **下一步 (next):** real A/B numbers still need the runtime LLM endpoint. The judge is now
   GT-validated across loops for 2/3 core relations; place_in is offline+positive validated.
 
+### gen7 — COMPOSITIONAL generalization (open drawer + put bowl inside) + cross-turn cache 🟢 GT-VALIDATED · A/B PENDING
+- **改动 (change):** `results/gen7_compositional/` — libero_goal task3 (a multi-step task the
+  official cap-x VDM FAILS on both swap+task; objects resolvable → operation/judgment failure,
+  the class to target). Judge = one `all_of(opened top-handle, place_in bowl→top-drawer)`. Added
+  a **cross-turn resolution cache** in `ctx.points_of`: a resolved object's last-frame world
+  points are stashed in `ctx.state` and reused when a later turn can't re-resolve it.
+- **结果 (result):** full 3-turn loop, **judge-vs-GT AGREE every turn** — t1 open-half+bowl-out
+  not-done ("handle 7.8/16cm | bowl 29.4cm, 0% inside"); t2 open-full+bowl-out not-done ("handle
+  15.8/16cm | bowl 0% inside" — the compositional signal: drawer done, bowl remaining); t3 bowl-in
+  **done → FINISH** ("in container 2.4cm"), GT True. The per-subgoal residual is the headline —
+  exactly what a frame-diff VDM cannot produce and why it fails multi-step tasks worst.
+- **教训 (lesson):** SAM-by-text is STATE-DEPENDENT — "top drawer" 0.33→0.24 once open+occluded,
+  so the first run honestly failed t3 ("could not resolve"). The cross-turn cache fixes it (a
+  just-localized static structure hasn't moved). Composition/geometry is sound; per-frame SAM
+  grounding is the recurring generalization limiter, now mitigated.
+- **下一步 (next):** the paradigm now has a compositional task GT-validated. Real A/B numbers
+  still need the runtime LLM endpoint. Further generalization: more compositional/operation-hard
+  libero_goal tasks; a stronger grounder (molmo point-prompt) for the SAM-flaky objects.
+
 <!-- newest generations go ABOVE this line as they happen -->
