@@ -70,12 +70,28 @@ all services: `bash scripts/start_capx_services.sh`** (SAM3/graspnet/pyroki/molm
   0 mm disturbance) but can't yet RELIABLY+SAFELY solve a compositional pick-place — the
   missing piece is collision-aware IK / a collision-checked executor for the pick (the HORL
   planner has it, but using it desyncs `solve_ik`'s stateful warm-start = gap-I).**
-- **NEXT (user request 2026-06-26): replace Contact-GraspNet with NVlabs GraspGenX**
-  (https://github.com/NVlabs/GraspGenX) for the bowl grasp — gap-L (no grasp-quality/stability
-  score) is the dominant failure; a better grasp generator should lift the pick reliability
-  directly. Integration point: `compose_skill.py` candidate pool (currently
-  `t["plan_grasp"]` ×3 → filter on-bowl/near-rim/downward → verify by descend+grip). Swap the
-  `plan_grasp` source for GraspGenX; keep the same verify-by-grip gate.
+- **GraspGenX swap (user request 2026-06-26): infrastructure DONE, but it does NOT yet beat
+  Contact-GraspNet on this bowl.** NVlabs GraspGenX is installed at
+  `~/Documents/Projects/HumanOnlyRobotLearning/src/packages/GraspGenX/` with a Unix-socket
+  inference service (`service/server.py`). Built a self-contained client
+  `capx-se/open_drawer/graspgenx_client.py` (length-prefixed wire protocol) +
+  `calib_ggx.py`. Service launch (its own venv, GPU0, **a PRIVATE socket
+  `grasp_gen_capx.sock` — a PARALLEL SESSION races the shared `grasp_gen.sock`, do NOT touch
+  it**): `.venv/bin/python -m service.server --socket /tmp/demo_bridge/sockets/grasp_gen_capx.sock
+  --default_gripper franka_panda`.
+  - **Works:** GraspGenX returns 6-DOF grasps with FAR higher confidence (0.83-0.94 vs CGN's
+    0.15-0.29), in the solve frame. Convention decoded (`graspgenx/robot.py`): approach=+Z,
+    closing=+X, `depth=0.1034`; grasp origin = panda_hand, fingertips at `pos+approach*0.1034`.
+    `solve_ik(pos+approach*depth, quat_from_R)` places the gripper exactly at the grasp pose.
+  - **Blocker:** on the akita bowl from a SINGLE agentview (top-only ~2600-pt cloud), GraspGenX
+    grasps GRIP the rim (closed-grip 0.17-0.32) but the bowl does NOT lift (slips; both up-lift
+    and approach-axis retract give dz=0). CGN's grasps from the same partial cloud happened to
+    capture the rim antipodally and held -> CGN's 9/20. GraspGenX conditions on OBJECT SHAPE and
+    is under-served by a top-only partial cloud.
+  - **NEXT to realise the swap: feed GraspGenX a FULLER bowl cloud** (multi-view / wrist-cam-
+    fused, or symmetry-completed) — its intended input, and a standing cap-x sensing gap. Then
+    wire it into `compose_skill.py`'s candidate pool (replace `t["plan_grasp"]`, keep the
+    verify-by-grip gate) and re-benchmark. The service is left RUNNING (tracked task, GPU0).
 - **How to run:** `MUJOCO_GL=egl HF_HUB_OFFLINE=1 .venv-libero/bin/python
   capx-se/open_drawer/run_compose.py --seeds 1 2 3 --max-steps 40000`. Grounding probes:
   `probe_task3.py` (scene geometry), `probe_target.py` (placement target), `calib_perception.py`
