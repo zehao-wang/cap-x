@@ -37,7 +37,7 @@ HIGH_APPROACH = 0.25          # approach the drop from this far above, then desc
 # (robot_cartesian_pos reads ~0.11 above it); grip reads ~1.0 open, ~0.015 closed-empty. ----
 BOWL_PRE_UP = 0.16            # pre-grasp standoff above the chosen grasp point
 HAND_ABOVE_TCP = 0.113        # robot_cartesian_pos (panda_hand) reads this far above the IK'd TCP
-GRASP_TRIES = 6              # graspnet candidates to try (by score) before giving up
+GRASP_TRIES = 10             # graspnet candidates to try (by score) before giving up
 GRIP_LO, GRIP_HI = 0.05, 0.40  # a firm bowl grasp reads here: excludes empty(~0.015) and
                                # over-grip(>0.4, which crushed past the rim and still slips)
 
@@ -129,22 +129,38 @@ def solve_compose(fns, *, instruction="open the top drawer and put the bowl insi
     # grasps (grip ~0.17-0.23 vs the pinch's ~0.10) that hold. We rank downward-approaching
     # candidates by score and accept the first that actually descends AND grips in a holding
     # range -- some candidates don't reach (bad IK) or over-grip and still slip.
+    # Pool several (stochastic) graspnet calls and keep only DOWNWARD grasps ON the bowl near
+    # the rim -- graspnet returns different candidates each call and many off-bowl ones close on
+    # air; pooling + filtering gives a reliable set, ranked by score.
     d2 = depth[:, :, 0] if depth.ndim == 3 else depth
-    try:
-        gposes_cam, gscores = t["plan_grasp"](d2, K, bowl["mask"])
-    except Exception as e:  # noqa: BLE001
-        log.llm("gate: graspnet found no bowl grasp -> abort",
-                inputs="bowl mask + depth", decides=f"ABORT ({e!r})")
-        return {"phase": "pick", "opened": True, "placed": False, "reason": "no grasp"}
-    cands = []
-    for i in np.argsort(-gscores):
-        w = ext @ gposes_cam[i]
-        if w[2, 2] > -0.5:            # keep downward-ish approaches (gripper z points down)
+    pool = {}
+    n_raw = 0
+    for _ in range(3):
+        try:
+            gposes_cam, gscores = t["plan_grasp"](d2, K, bowl["mask"])
+        except Exception:  # noqa: BLE001
             continue
-        cands.append((w[:3, 3].copy(), t["rotation_matrix_to_quaternion"](w[:3, :3]), float(gscores[i])))
-    log.llm("rank bowl-grasp candidates (Contact-GraspNet, downward-filtered)",
-            inputs=f"{len(gscores)} grasp candidates + scores",
-            decides=f"{len(cands)} downward candidates, try best {GRASP_TRIES}")
+        n_raw += len(gscores)
+        for i in range(len(gscores)):
+            w = ext @ gposes_cam[i]
+            pos = w[:3, 3]
+            if w[2, 2] > -0.3:                                      # downward-ish approach
+                continue
+            if np.linalg.norm(pos[:2] - bcen[:2]) > 0.09:          # on the bowl+rim footprint
+                continue
+            if not (-0.03 < pos[2] < 0.07):                        # near the rim/table
+                continue
+            key = tuple(np.round(pos, 2))
+            if key not in pool or gscores[i] > pool[key][2]:
+                pool[key] = (pos.copy(), t["rotation_matrix_to_quaternion"](w[:3, :3]), float(gscores[i]))
+    cands = sorted(pool.values(), key=lambda c: -c[2])
+    if not cands:
+        log.llm("gate: no on-bowl graspnet grasp -> abort",
+                inputs=f"{n_raw} raw grasps", decides="ABORT")
+        return {"phase": "pick", "opened": True, "placed": False, "reason": "no grasp"}
+    log.llm("rank bowl-grasp candidates (Contact-GraspNet, pooled+filtered)",
+            inputs=f"{n_raw} raw grasps over 3 calls",
+            decides=f"{len(cands)} on-bowl candidates, try best {GRASP_TRIES}")
 
     grasp_p = grasp_q = None
     placed_ok = False
