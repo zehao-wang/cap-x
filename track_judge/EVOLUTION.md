@@ -123,4 +123,23 @@ judge is degenerate (gaming — calls everything "done"). Commit EVERY generatio
   demonstrated end-to-end on a real task across turns. gen5 candidate: proprioceptive gripper for
   `grasped()`; extend the simulated-LLM loop to a pick-place task (place_in / on_top_of).
 
+### gen5 — CALL-COUNT A/B across tasks (LLM simulated) + honest-unresolved-target fix 🟢 DEMONSTRATED · A/B PENDING
+- **改动 (change):** `results/gen5_callcount/` — 3 tasks (drawer `opened`, bowl-on-plate
+  `on_top_of`, cheese-in-bowl `place_in`), each its real libero task, 2-turn simulated-LLM loop,
+  counting **LLM calls** (the agreed metric — speed ignored). Fix surfaced by task6: `_resolve`
+  no longer whole-grid-falls-back for a NAMED object; `judge()` returns an honest "could not
+  resolve target/reference" verdict (progress None) instead of a fake geometric pass.
+- **结果 (result):** **arm B judgment LLM calls = 0 vs arm A (VDM) = 1/turn** → on 6 turns,
+  total LLM calls (with codegen 1/turn) **arm B 6 vs arm A 12 = −50%**. task0 fully GT-validated
+  (REGENERATE→FINISH, AGREE both turns). task8 geometrically correct but teleport stub can't fire
+  LIBERO's contact-based placement GT (stub limitation). task6 SAM can't ground "cream cheese"
+  (0.02) → judge now says so honestly. Self-test passes.
+- **教训 (lesson):** the call-count win is structural (−1 LLM call/turn, here −50% total); it is
+  not stochastic because arm B's judgment is code. The whole-grid fallback for a named object was
+  a latent bug — a confident wrong verdict from the background; uncertainty must be reported, not
+  hidden. The lone residual is grounding (which object), not the per-turn judgment.
+- **下一步 (next):** real A/B numbers still need the runtime LLM endpoint; the call-count
+  mechanism is now demonstrated across relations. gen6 candidates: physical-settle stubs so
+  placement GT fires for a fully GT-validated on_top_of/place_in loop; proprioceptive `grasped()`.
+
 <!-- newest generations go ABOVE this line as they happen -->

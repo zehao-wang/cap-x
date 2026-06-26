@@ -250,9 +250,20 @@ def judge(ctx, relation: str, *, target: Optional[str] = None,
                         f"{sorted(_RELATIONS)}", abort=False)
 
     tgt = _resolve(ctx, target)
+    if target is not None and tgt is None:
+        # Honest uncertainty: the named object could not be resolved (not found / occluded /
+        # low SAM confidence). DON'T fake a verdict from the whole-frame grid — say so, with
+        # progress=None (unknown). This is the semantic-grounding boundary surfacing cleanly.
+        return _verdict(False, None,
+                        f"could not resolve target '{target}' (object not found / occluded / "
+                        f"low SAM confidence) — try a different name", abort=False)
     kwargs: Dict[str, Any] = {}
     if rel in _NEEDS_REFERENCE:
         ref = _resolve(ctx, reference)
+        if reference is not None and ref is None:
+            return _verdict(False, None,
+                            f"could not resolve reference '{reference}' (not found / occluded / "
+                            f"low SAM confidence) — try a different name", abort=False)
         if ref is None:
             return _verdict(False, None,
                             f"relation {rel!r} needs a reference object name", abort=False)
@@ -299,7 +310,12 @@ def all_of(ctx, *specs) -> Dict[str, Any]:
 
 
 def _resolve(ctx, text: Optional[str]):
-    """Named object → [T,Nt,3] trajectory. Whole-grid fallback (never raises)."""
+    """Named object → [T,Nt,3] trajectory, or None if it cannot be resolved.
+
+    Deliberately does NOT fall back to the whole-frame grid for a NAMED object — a verdict
+    computed over the whole scene when we failed to find the object is confidently wrong
+    (it was tracking the background). The caller turns a None into an honest "could not
+    resolve" verdict instead."""
     if text is None:
         return None
     pts = None
@@ -309,7 +325,7 @@ def _resolve(ctx, text: Optional[str]):
         except Exception:
             pts = None
     if pts is None or np.asarray(pts).size == 0 or np.asarray(pts).shape[1] == 0:
-        return np.asarray(ctx.coords, dtype=float)
+        return None
     return np.asarray(pts, dtype=float)
 
 

@@ -58,4 +58,15 @@ CHANGELOG: list[tuple[int, str]] = [
         "<6 hits -- a drawer handle (~0.2% of frame) got 0-1 grid hits so its centroid was "
         "static background ('moved 0.2cm' while fully open); dense seeding tracks the full "
         "15.8cm. A/B numbers still need the real runtime LLM, but the mechanism is demonstrated."),
+    (5, "gen5 — CALL-COUNT A/B across 3 tasks (runtime LLM simulated) + honest-unresolved fix. "
+        "Metric of record = LLM CALL COUNT (not speed). 3 tasks x 2-turn loop: arm B judgment "
+        "calls = 0 (geometry) vs arm A VDM = 1/turn (6 total); with codegen 1/turn, total LLM "
+        "calls arm B 6 vs arm A 12 = -50%. task0(opened) fully GT-validated (joint GT, faithful "
+        "stub) REGENERATE->FINISH AGREE both turns; task8(on_top_of) judge geometrically correct "
+        "but teleport stub can't trigger LIBERO's contact-based placement GT; task6(place_in) "
+        "SAM can't ground 'cream cheese'(0.02). FIX surfaced by task6: _resolve no longer falls "
+        "back to the whole-frame grid for a NAMED object (that faked a confident wrong verdict "
+        "from background); judge() now returns an HONEST 'could not resolve target/reference' "
+        "verdict (progress None). The semantic-grounding boundary reported as uncertainty, not a "
+        "fake pass. Self-test still passes."),
 ]
