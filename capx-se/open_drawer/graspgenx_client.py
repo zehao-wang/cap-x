@@ -60,12 +60,18 @@ def _recv(sock):
 
 
 def graspgenx_grasps(pc, *, gripper="franka_panda", num_grasps=200, topk=50,
-                     grasp_threshold=-1.0, socket_path=SOCKET_PATH, timeout=60.0):
+                     grasp_threshold=-1.0, center=True, socket_path=SOCKET_PATH, timeout=60.0):
     """Return (grasps (K,4,4) float32, confidences (K,) float32) for object cloud ``pc`` (N,3),
-    in the SAME frame as ``pc``. Raises on service error / no connection."""
+    in the SAME frame as ``pc``. Raises on service error / no connection.
+
+    ``center=True`` (default) shifts the cloud to its centroid before inference and shifts the
+    returned grasp translations back -- GraspGenX is trained on OBJECT-CENTERED clouds (see the
+    repo's _render_grasps_png.py: it applies T_center = -mean before run_inference), and an
+    un-centered (world-offset) cloud yields degraded grasps that grip but don't hold."""
     pc = np.asarray(pc, dtype=np.float32)
     if pc.ndim != 2 or pc.shape[1] != 3:
         raise ValueError(f"pc must be (N,3); got {pc.shape}")
+    mean = pc.mean(0) if center else np.zeros(3, np.float32)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     sock.connect(socket_path)
@@ -73,14 +79,16 @@ def graspgenx_grasps(pc, *, gripper="franka_panda", num_grasps=200, topk=50,
         _send(sock, {"method": "infer",
                      "job": {"gripper_name": gripper, "num_grasps": int(num_grasps),
                              "topk_num_grasps": int(topk), "grasp_threshold": float(grasp_threshold)}},
-              {"point_cloud": pc})
+              {"point_cloud": (pc - mean).astype(np.float32)})
         header, tensors = _recv(sock)
     finally:
         sock.close()
     if header.get("ok") is False:
         raise RuntimeError(f"GraspGenX service error: {header.get('error')}")
-    g = tensors.get("grasps", np.zeros((0, 4, 4), np.float32))
+    g = tensors.get("grasps", np.zeros((0, 4, 4), np.float32)).copy()
     c = tensors.get("confidences", np.zeros((0,), np.float32))
+    if len(g):
+        g[:, :3, 3] += mean          # un-center: grasps come back in the centered frame
     return g, c
 
 
